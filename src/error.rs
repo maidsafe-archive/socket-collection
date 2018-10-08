@@ -1,6 +1,7 @@
 use maidsafe_utilities::serialisation::SerialisationError;
 use mio::timer::TimerError;
 use std::io;
+use udt_extern::UdtError;
 
 quick_error! {
     /// Common module specific error
@@ -39,6 +40,12 @@ quick_error! {
         /// A zero byte socket read - means EOF
         ZeroByteRead {
             description("Read zero bytes from the socket - indicates EOF")
+        }
+        /// UDT error
+        Udt(e: UdtError) {
+            description(&e.err_msg)
+            display("Udt error: {}", e.err_msg)
+            from()
         }
     }
 }

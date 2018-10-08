@@ -16,17 +16,19 @@ extern crate serde_derive;
 extern crate unwrap;
 
 extern crate byteorder;
+extern crate libudt4_sys;
 extern crate maidsafe_utilities;
 extern crate mio;
-extern crate net2;
 extern crate serde;
+extern crate udt as udt_extern;
 
 pub use error::SocketError;
 pub use tcp_sock::TcpSock;
+pub use udt::UdtSock;
 
 mod error;
 mod tcp_sock;
-mod udt_sock;
+mod udt;
 
 /// Priority of a message to be sent by Crust. A lower value means a higher priority, so Priority 0
 /// is the highest one. Low-priority messages will be preempted if need be to allow higher priority
