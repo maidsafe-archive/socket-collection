@@ -1,0 +1,20 @@
+[package]
+authors = ["ustulation <ustulation@gmail.com>"]
+description = "NAT Traversal for P2P communication"
+documentation = "https://docs.rs/socket-collection/"
+license = "MIT OR BSD-3-Clause"
+name = "socket-collection"
+readme = "README.md"
+repository = "https://github.com/ustulation/socket-collection"
+version = "0.1.0"
+
+[dependencies]
+byteorder = "~1.1.0"
+log = "~0.3.6"
+maidsafe_utilities = "~0.15.0"
+mio = "~0.6.9"
+net2 = "~0.2.30"
+quick-error = "~1.2.2"
+serde = "~1.0.25"
+serde_derive = "~1.0.25"
+unwrap = "~1.1.0"
