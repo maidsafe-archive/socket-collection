@@ -3,10 +3,10 @@ authors = ["ustulation <ustulation@gmail.com>"]
 description = "NAT Traversal for P2P communication"
 documentation = "https://docs.rs/socket-collection/"
 license = "MIT OR BSD-3-Clause"
-name = "socket_collection"
+name = "socket-collection"
 readme = "README.md"
 repository = "https://github.com/ustulation/socket-collection"
-version = "0.1.0"
+version = "0.2.0"
 
 [dependencies]
 byteorder = "~1.1.0"
