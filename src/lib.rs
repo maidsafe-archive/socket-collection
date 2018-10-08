@@ -24,7 +24,7 @@ extern crate udt as udt_extern;
 
 pub use error::SocketError;
 pub use tcp_sock::TcpSock;
-pub use udt::UdtSock;
+pub use udt::{EpollLoop, Handle, Notifier, UdtSock};
 
 mod error;
 mod tcp_sock;

@@ -1,24 +1,150 @@
-use mio::Token;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use udt_extern::{Epoll, UdtSocket};
+use SocketError;
+use mio::{Event, Ready, Token};
+use std::collections::{HashMap, HashSet};
+use std::mem;
+use std::sync::{Arc, Mutex, Weak};
+use udt_extern::{Epoll, EpollEvents, self, UDT_EPOLL_ERR, UDT_EPOLL_IN, UDT_EPOLL_OUT, UdtSocket};
+use maidsafe_utilities::thread::{self, Joiner};
 
-pub struct EpollWrap<T> {
-    epoll: Epoll,
-    token_map: HashMap<UdtSocket, Token>,
-    tx: T,
+pub struct EpollLoop {
+    queued_actions: Weak<Mutex<HashSet<QueuedAction>>>,
+    _joiner: Joiner,
 }
 
-impl<T: TokenSender> EpollWrap<T> {
-    pub fn start_el(tx: T) -> ::Res<Arc<Mutex<Self>>> {
+#[derive(Clone)]
+pub struct Handle {
+    queued_actions: Weak<Mutex<HashSet<QueuedAction>>>,
+}
+
+pub trait Notifier {
+    fn notify(&self, event: Event);
+}
+
+impl EpollLoop {
+    pub fn start_event_loop<T: Notifier + Send + 'static>(notifier: T) -> ::Res<EpollLoop> {
+        udt_extern::init();
+
+        // Create it just now so that if it fails we can report it immediately
         let mut epoll = Epoll::create()?;
 
-        Ok(Arc::new(Mutex::new(EpollWrap {
-            epoll,
-            token_map: Default::default(),
-            tx,
-        })))
+        let queued_actions = Arc::new(Mutex::new(HashSet::<QueuedAction>::default()));
+        let queued_actions_weak = Arc::downgrade(&queued_actions);
+
+        let j = thread::named("UDT Event Loop", move || {
+            event_loop_impl(epoll, notifier, queued_actions);
+        });
+
+        Ok(EpollLoop {
+            queued_actions: queued_actions_weak,
+            _joiner: j,
+        })
+    }
+
+    pub fn handle(&self) -> Handle {
+        Handle {
+            queued_actions: self.queued_actions.clone(),
+        }
     }
 }
 
-pub trait TokenSender {}
+impl Drop for EpollLoop {
+    fn drop(&mut self) {
+        if let Some(queued_actions) = self.queued_actions.upgrade() {
+            unwrap!(queued_actions.lock()).insert(QueuedAction::ShutdownEventLoop);
+        }
+    }
+}
+
+impl Handle {
+    pub fn register(&self, sock: UdtSocket, token: Token, interest: Ready) -> ::Res<()> {
+        match self.queued_actions.upgrade() {
+            Some(queued_actions) => {
+                let mut event_set = EpollEvents::empty();
+                if interest.is_readable() {
+                    event_set.insert(UDT_EPOLL_IN)
+                }
+                if interest.is_writable() {
+                    event_set.insert(UDT_EPOLL_OUT)
+                }
+                event_set.insert(UDT_EPOLL_ERR);
+
+                let _ = unwrap!(queued_actions.lock()).insert(QueuedAction::Register {
+                    sock,
+                    token,
+                    event_set,
+                });
+            }
+            None => return Err(SocketError::NoUdtEpoll),
+        }
+
+        Ok(())
+    }
+
+    pub fn deregister(&self, sock: UdtSocket) -> ::Res<()> {
+        match self.queued_actions.upgrade() {
+            Some(queued_actions) => {
+                let _  = unwrap!(queued_actions.lock()).insert(QueuedAction::Deregister { sock });
+            }
+            None => return Err(SocketError::NoUdtEpoll),
+        }
+
+        Ok(())
+    }
+}
+
+fn event_loop_impl<T: Notifier + Send + 'static>(mut epoll: Epoll, notifier: T, queued_actions: Arc<Mutex<HashSet<QueuedAction>>>) {
+    let mut token_map: HashMap<UdtSocket, Token> = Default::default();
+    loop {
+        if let Ok((read_ready, write_ready)) = epoll.wait(1000, true) {
+            for sock in read_ready {
+                if let Some(token) = token_map.get(&sock) {
+                    notifier.notify(Event::new(Ready::readable(), *token));
+                }
+            }
+            for sock in write_ready {
+                if let Some(token) = token_map.get(&sock) {
+                    notifier.notify(Event::new(Ready::writable(), *token));
+                }
+            }
+        }
+
+        let drained_queued_actions = mem::replace(&mut *unwrap!(queued_actions.lock()), Default::default());
+        for action in drained_queued_actions {
+            match action {
+                QueuedAction::Register { sock, token, event_set } => {
+                    if let Err(e) = epoll.remove_usock(&sock) {
+                        warn!("Error in deregistering UDT socket: {:?}", e);
+                    }
+                    if let Err(e) = epoll.add_usock(&sock, Some(event_set)) {
+                        warn!("Failed to register UDT socket: {:?}", e);
+                    }
+                    let _ = token_map.insert(sock, token);
+                }
+                QueuedAction::Deregister { sock } => {
+                    if let Err(e) = epoll.remove_usock(&sock) {
+                        warn!("Error in deregistering UDT socket: {:?}", e);
+                    }
+                    let _ = token_map.remove(&sock);
+                }
+                QueuedAction::ShutdownEventLoop => {
+                    // FIXME: get this available
+                    // epoll.release();
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Eq, PartialEq, Hash)]
+enum QueuedAction {
+    Register {
+        sock: UdtSocket,
+        token: Token,
+        event_set: EpollEvents,
+    },
+    Deregister {
+        sock: UdtSocket,
+    },
+    ShutdownEventLoop,
+}

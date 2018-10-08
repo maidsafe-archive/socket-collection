@@ -1,30 +1,29 @@
-use {SocketError, Priority, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
+use {Handle, SocketError, Priority, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use libudt4_sys::{EASYNCRCV, EASYNCSND};
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
-use mio::udp::UdpSocket;
-use mio::{Evented, Poll, PollOpt, Ready, Token};
+use mio::{self, Evented, Poll, PollOpt, Ready, Token};
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::io::{self, Cursor, ErrorKind, Read, Write};
-use std::mem;
+use std::{self, mem};
 use std::net::SocketAddr;
-use std::sync::{Mutex, Weak};
 use std::time::Instant;
-use udt_extern::{Epoll, EpollEvents, SocketFamily, SocketType, UDT_EPOLL_ERR, UDT_EPOLL_IN, UDT_EPOLL_OUT, UdtOpts, UdtSocket};
+use udt_extern::{SocketFamily, SocketType, UdtOpts, UdtSocket};
 
 pub struct UdtSock {
     inner: Option<Inner>,
 }
 
 impl UdtSock {
-    pub fn wrap(udp_sock: UdpSocket, epoll: Weak<Mutex<Epoll>>) -> ::Res<Self> {
+    pub fn wrap_std_sock(udp_sock: std::net::UdpSocket, handle: Handle) -> ::Res<Self> {
         let stream = UdtSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
+
         // FIXME: Check code in udt-rs to see if `bind_from` is really consuming the socket
         // else it'll be a problem
-        stream.bind_from(mio_to_std_udp_sock(udp_sock))?;
+        stream.bind_from(udp_sock)?;
 
         // Make connect and reads non-blocking
         stream.setsockopt(UdtOpts::UDT_RCVSYN, false)?;
@@ -36,13 +35,17 @@ impl UdtSock {
         Ok(UdtSock {
             inner: Some(Inner {
                 stream,
+                handle,
                 read_buffer: Vec::new(),
                 read_len: 0,
                 write_queue: BTreeMap::new(),
                 current_write: None,
-                epoll,
             }),
         })
+    }
+
+    pub fn wrap_mio_sock(udp_sock: mio::net::UdpSocket, handle: Handle) -> ::Res<Self> {
+        UdtSock::wrap_std_sock(mio_to_std_udp_sock(udp_sock), handle)
     }
 
     pub fn connect(&self, addr: &SocketAddr) -> ::Res<()> {
@@ -159,11 +162,11 @@ impl Evented for UdtSock {
 
 struct Inner {
     stream: UdtSocket,
+    handle: Handle,
     read_buffer: Vec<u8>,
     read_len: usize,
     write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
     current_write: Option<Vec<u8>>,
-    epoll: Weak<Mutex<Epoll>>,
 }
 
 impl Inner {
@@ -347,31 +350,12 @@ impl Evented for Inner {
     fn register(
         &self,
         _poll: &Poll,
-        _token: Token,
+        token: Token,
         interest: Ready,
         _opts: PollOpt,
     ) -> io::Result<()> {
-        let epoll = match self.epoll.upgrade() {
-            Some(epoll) => epoll,
-            None => return Err(into_io_error(Option::None::<io::Error>, "No UDT Epoll while registering !")),
-        };
-
-        let mut event_set = EpollEvents::empty();
-        if interest.is_readable() {
-            event_set.insert(UDT_EPOLL_IN)
-        }
-        if interest.is_writable() {
-            event_set.insert(UDT_EPOLL_OUT)
-        }
-        event_set.insert(UDT_EPOLL_ERR);
-
-        let mut locked_epoll = unwrap!(epoll.lock());
-        locked_epoll.
-            remove_usock(&self.stream).
-            map_err(|e| into_io_error(Some(e), "While deregistering before registering"))?;
-        Ok(locked_epoll.
-            add_usock(&self.stream, Some(event_set)).
-            map_err(|e| into_io_error(Some(e), "While registering after deregistering"))?)
+        Ok(self.handle.register(self.stream, token, interest)
+            .map_err(|e| into_io_error(Some(e), ""))?)
     }
 
     fn reregister(
@@ -385,15 +369,8 @@ impl Evented for Inner {
     }
 
     fn deregister(&self, _poll: &Poll) -> io::Result<()> {
-        let epoll = match self.epoll.upgrade() {
-            Some(epoll) => epoll,
-            None => return Err(into_io_error(Option::None::<io::Error>, "No UDT Epoll while deregistering !")),
-        };
-
-        let locked_epoll = unwrap!(epoll.lock());
-        Ok(locked_epoll.
-            remove_usock(&self.stream).
-            map_err(|e| into_io_error(Some(e), "While deregistering"))?)
+        Ok(self.handle.deregister(self.stream)
+            .map_err(|e| into_io_error(Some(e), ""))?)
     }
 }
 
@@ -424,14 +401,14 @@ fn into_io_error<E: Debug>(e: Option<E>, m: &str) -> io::Error {
 
 #[allow(unsafe_code)]
 #[cfg(target_family = "unix")]
-fn mio_to_std_udp_sock(socket: UdpSocket) -> ::std::net::UdpSocket {
+fn mio_to_std_udp_sock(socket: mio::net::UdpSocket) -> std::net::UdpSocket {
     use std::os::unix::io::{FromRawFd, IntoRawFd};
     unsafe { FromRawFd::from_raw_fd(socket.into_raw_fd()) }
 }
 
 #[allow(unsafe_code)]
 #[cfg(target_family = "windows")]
-fn mio_to_std_udp_sock(_socket: UdpSocket) -> ::std::net::UdpSocket {
+fn mio_to_std_udp_sock(_socket: mio::net::UdpSocket) -> std::net::UdpSocket {
     use std::os::windows::io::{FromRawSocket, IntoRawSocket};
     unsafe { FromRawFd::from_raw_socket(socket.into_raw_socket()) }
 }

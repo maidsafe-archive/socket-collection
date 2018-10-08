@@ -47,5 +47,9 @@ quick_error! {
             display("Udt error: {}", e.err_msg)
             from()
         }
+        /// No UDT Epoll Loop
+        NoUdtEpoll {
+            description("No UDT Epoll while registering/deregistering !")
+        }
     }
 }
