@@ -13,6 +13,9 @@ use std::net::SocketAddr;
 use std::time::Instant;
 use udt_extern::{SocketFamily, SocketType, UdtOpts, UdtSocket};
 
+const UDP_SNDBUF_SIZE: i32 = 512 * 1024;
+const UDP_RCVBUF_SIZE: i32 = 512 * 1024;
+
 pub struct UdtSock {
     inner: Option<Inner>,
 }
@@ -21,21 +24,19 @@ impl UdtSock {
     pub fn wrap_std_sock(udp_sock: std::net::UdpSocket, handle: Handle) -> ::Res<Self> {
         let stream = UdtSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
 
-        trace!("UDT_RCVSYN false..");
+        // Since we are supplying the UDP socket we don't want the UDT to make assumptions about it
+        // as the default at the time of this comment was 1MiB
+        stream.setsockopt(UdtOpts::UDP_SNDBUF, UDP_SNDBUF_SIZE)?;
+        stream.setsockopt(UdtOpts::UDP_RCVBUF, UDP_RCVBUF_SIZE)?;
         // Make connect and reads non-blocking
         stream.setsockopt(UdtOpts::UDT_RCVSYN, false)?;
-        trace!("UDT_SNDSYN false..");
         // Make writes non-blocking
         stream.setsockopt(UdtOpts::UDT_SNDSYN, false)?;
-        trace!("UDT_RENDEZVOUS true..");
-        // Enable rendezvous mode for simultaneous connect
+        // Enable rendezvous mode for simultaneous connect. This is necessary to bind an existing
+        // UDP socket
         stream.setsockopt(UdtOpts::UDT_RENDEZVOUS, true)?;
 
-        // FIXME: Check code in udt-rs to see if `bind_from` is really consuming the socket
-        // else it'll be a problem
-        trace!("UDT binding to a UDP socket..");
         stream.bind_from(udp_sock)?;
-        trace!("UDT binding to a UDP socket: Passed");
 
         Ok(UdtSock {
             inner: Some(Inner {
