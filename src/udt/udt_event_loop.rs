@@ -32,6 +32,7 @@ impl EpollLoop {
 
         let j = thread::named("UDT Event Loop", move || {
             event_loop_impl(epoll, notifier, queued_actions);
+            debug!("Gracefully shut down udt epoll event loop");
         });
 
         Ok(EpollLoop {
@@ -95,17 +96,21 @@ impl Handle {
 fn event_loop_impl<T: Notifier + Send + 'static>(mut epoll: Epoll, notifier: T, queued_actions: Arc<Mutex<HashSet<QueuedAction>>>) {
     let mut token_map: HashMap<UdtSocket, Token> = Default::default();
     loop {
-        if let Ok((read_ready, write_ready)) = epoll.wait(1000, true) {
-            for sock in read_ready {
-                if let Some(token) = token_map.get(&sock) {
-                    notifier.notify(Event::new(Ready::readable(), *token));
+        match epoll.wait(1000, true) {
+            Ok((read_ready, write_ready)) => {
+                trace!("Epoll fired with readiness with reads for {} sockets and writes for {} sockets", read_ready.len(), write_ready.len());
+                for sock in read_ready {
+                    if let Some(token) = token_map.get(&sock) {
+                        notifier.notify(Event::new(Ready::readable(), *token));
+                    }
+                }
+                for sock in write_ready {
+                    if let Some(token) = token_map.get(&sock) {
+                        notifier.notify(Event::new(Ready::writable(), *token));
+                    }
                 }
             }
-            for sock in write_ready {
-                if let Some(token) = token_map.get(&sock) {
-                    notifier.notify(Event::new(Ready::writable(), *token));
-                }
-            }
+            Err(e) => trace!("Broke out of epoll loop: {:?}", e),
         }
 
         let drained_queued_actions = mem::replace(&mut *unwrap!(queued_actions.lock()), Default::default());
