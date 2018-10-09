@@ -21,16 +21,21 @@ impl UdtSock {
     pub fn wrap_std_sock(udp_sock: std::net::UdpSocket, handle: Handle) -> ::Res<Self> {
         let stream = UdtSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
 
-        // FIXME: Check code in udt-rs to see if `bind_from` is really consuming the socket
-        // else it'll be a problem
-        stream.bind_from(udp_sock)?;
-
+        trace!("UDT_RCVSYN false..");
         // Make connect and reads non-blocking
         stream.setsockopt(UdtOpts::UDT_RCVSYN, false)?;
+        trace!("UDT_SNDSYN false..");
         // Make writes non-blocking
         stream.setsockopt(UdtOpts::UDT_SNDSYN, false)?;
+        trace!("UDT_RENDEZVOUS true..");
         // Enable rendezvous mode for simultaneous connect
         stream.setsockopt(UdtOpts::UDT_RENDEZVOUS, true)?;
+
+        // FIXME: Check code in udt-rs to see if `bind_from` is really consuming the socket
+        // else it'll be a problem
+        trace!("UDT binding to a UDP socket..");
+        stream.bind_from(udp_sock)?;
+        trace!("UDT binding to a UDP socket: Passed");
 
         Ok(UdtSock {
             inner: Some(Inner {
