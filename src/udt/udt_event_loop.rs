@@ -1,10 +1,10 @@
-use SocketError;
+use maidsafe_utilities::thread::{self, Joiner};
 use mio::{Event, Ready, Token};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::{Arc, Mutex, Weak};
-use udt_extern::{Epoll, EpollEvents, self, UDT_EPOLL_ERR, UDT_EPOLL_IN, UDT_EPOLL_OUT, UdtSocket};
-use maidsafe_utilities::thread::{self, Joiner};
+use udt_extern::{self, Epoll, EpollEvents, UdtSocket, UDT_EPOLL_ERR, UDT_EPOLL_IN, UDT_EPOLL_OUT};
+use SocketError;
 
 pub struct EpollLoop {
     queued_actions: Weak<Mutex<HashSet<QueuedAction>>>,
@@ -84,7 +84,7 @@ impl Handle {
     pub fn deregister(&self, sock: UdtSocket) -> ::Res<()> {
         match self.queued_actions.upgrade() {
             Some(queued_actions) => {
-                let _  = unwrap!(queued_actions.lock()).insert(QueuedAction::Deregister { sock });
+                let _ = unwrap!(queued_actions.lock()).insert(QueuedAction::Deregister { sock });
             }
             None => return Err(SocketError::NoUdtEpoll),
         }
@@ -93,12 +93,21 @@ impl Handle {
     }
 }
 
-fn event_loop_impl<T: Notifier + Send + 'static>(mut epoll: Epoll, notifier: T, queued_actions: Arc<Mutex<HashSet<QueuedAction>>>) {
+fn event_loop_impl<T: Notifier + Send + 'static>(
+    mut epoll: Epoll,
+    notifier: T,
+    queued_actions: Arc<Mutex<HashSet<QueuedAction>>>,
+) {
     let mut token_map: HashMap<UdtSocket, Token> = Default::default();
     loop {
         match epoll.wait(1000, true) {
             Ok((read_ready, write_ready)) => {
-                trace!("Epoll fired with readiness with reads for {} sockets and writes for {} sockets", read_ready.len(), write_ready.len());
+                trace!(
+                    "Epoll fired with readiness with reads for {} sockets and writes for {}
+                       sockets",
+                    read_ready.len(),
+                    write_ready.len()
+                );
                 for sock in read_ready {
                     if let Some(token) = token_map.get(&sock) {
                         notifier.notify(Event::new(Ready::readable(), *token));
@@ -113,10 +122,15 @@ fn event_loop_impl<T: Notifier + Send + 'static>(mut epoll: Epoll, notifier: T, 
             Err(e) => trace!("Broke out of epoll loop: {:?}", e),
         }
 
-        let drained_queued_actions = mem::replace(&mut *unwrap!(queued_actions.lock()), Default::default());
+        let drained_queued_actions =
+            mem::replace(&mut *unwrap!(queued_actions.lock()), Default::default());
         for action in drained_queued_actions {
             match action {
-                QueuedAction::Register { sock, token, event_set } => {
+                QueuedAction::Register {
+                    sock,
+                    token,
+                    event_set,
+                } => {
                     if let Err(e) = epoll.remove_usock(&sock) {
                         warn!("Error in deregistering UDT socket: {:?}", e);
                     }

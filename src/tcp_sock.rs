@@ -1,4 +1,3 @@
-use {SocketError, Priority, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
 use mio::tcp::TcpStream;
@@ -10,6 +9,7 @@ use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Instant;
+use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 
 pub struct TcpSock {
     inner: Option<Inner>,
