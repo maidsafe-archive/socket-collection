@@ -100,19 +100,14 @@ impl UdtSock {
     // Returns:
     //   - Ok(true):   the message has been successfully written.
     //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 Write event is already scheduled for next time.
+    //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
-    pub fn write<T: Serialize>(
-        &mut self,
-        poll: &Poll,
-        token: Token,
-        msg: Option<(T, Priority)>,
-    ) -> ::Res<bool> {
+    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let inner = self
             .inner
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
-        inner.write(poll, token, msg)
+        inner.write(msg)
     }
 }
 
@@ -195,9 +190,12 @@ impl Inner {
 
         loop {
             match self.stream.recv(&mut buffer, BUF_LEN) {
-                Ok(bytes_read) => {
-                    let bytes_read = bytes_read as usize;
-                    if bytes_read == 0 {
+                Ok(bytes_rxd) => {
+                    if bytes_rxd < 0 {
+                        return Err(SocketError::UdtNegativeBytesRead(bytes_rxd));
+                    }
+                    let bytes_rxd = bytes_rxd as usize;
+                    if bytes_rxd == 0 {
                         let e = Err(SocketError::ZeroByteRead);
                         if is_something_read {
                             return match self.read_from_buffer() {
@@ -208,7 +206,7 @@ impl Inner {
                             return e;
                         }
                     }
-                    self.read_buffer.extend_from_slice(&buffer[0..bytes_read]);
+                    self.read_buffer.extend_from_slice(&buffer[0..bytes_rxd]);
                     is_something_read = true;
                 }
                 Err(error) => {
@@ -260,14 +258,9 @@ impl Inner {
     // Returns:
     //   - Ok(true):   the message has been successfully written.
     //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 Write event is already scheduled for next time.
+    //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
-    fn write<T: Serialize>(
-        &mut self,
-        poll: &Poll,
-        token: Token,
-        msg: Option<(T, Priority)>,
-    ) -> ::Res<bool> {
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let expired_keys: Vec<u8> = self
             .write_queue
             .iter()
@@ -309,20 +302,25 @@ impl Inner {
             entry.push_back((Instant::now(), data.into_inner()));
         }
 
-        if self.current_write.is_none() {
-            let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
-                Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                None => return Ok(true),
+        loop {
+            let data = if let Some(data) = self.current_write.take() {
+                data
+            } else {
+                let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
+                    Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
+                    None => return Ok(true),
+                };
+                if empty {
+                    let _ = self.write_queue.remove(&key);
+                }
+                data
             };
-            if empty {
-                let _ = self.write_queue.remove(&key);
-            }
-            self.current_write = Some(data);
-        }
 
-        if let Some(data) = self.current_write.take() {
             match self.stream.send(&data) {
                 Ok(bytes_txd) => {
+                    if bytes_txd < 0 {
+                        return Err(SocketError::UdtNegativeBytesWrite(bytes_txd));
+                    }
                     let bytes_txd = bytes_txd as usize;
                     if bytes_txd < data.len() {
                         self.current_write = Some(data[bytes_txd..].to_owned());
@@ -331,24 +329,13 @@ impl Inner {
                 Err(error) => {
                     if error.err_code == EASYNCSND {
                         self.current_write = Some(data);
+                        return Ok(false);
                     } else {
                         return Err(From::from(error));
                     }
                 }
             }
         }
-
-        let done = self.current_write.is_none() && self.write_queue.is_empty();
-
-        let event_set = if done {
-            Ready::error() | Ready::hup() | Ready::readable()
-        } else {
-            Ready::error() | Ready::hup() | Ready::readable() | Ready::writable()
-        };
-
-        poll.reregister(self, token, event_set, PollOpt::edge())?;
-
-        Ok(done)
     }
 }
 

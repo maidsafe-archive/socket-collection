@@ -55,5 +55,15 @@ quick_error! {
         NoUdtEpoll {
             description("No UDT Epoll while registering/deregistering")
         }
+        /// UDT read has resulted in negative return value
+        UdtNegativeBytesRead(val: i32) {
+            description("UDT Read has resulted in a negative result. This is an error value.")
+            display("UDT Read has resulted in a negative result. This is an error value: {}", val)
+        }
+        /// UDT write has resulted in negative return value
+        UdtNegativeBytesWrite(val: i32) {
+            description("UDT Write has resulted in a negative result. This is an error value.")
+            display("UDT Write has resulted in a negative result. This is an error value: {}", val)
+        }
     }
 }

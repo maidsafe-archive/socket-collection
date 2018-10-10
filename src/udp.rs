@@ -1,15 +1,13 @@
 use maidsafe_utilities::serialisation::{deserialise, serialise};
 use mio::net::UdpSocket;
-use mio::{self, Evented, Poll, PollOpt, Ready, Token};
+use mio::{Evented, Poll, PollOpt, Ready, Token};
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
-use std::fmt::Debug;
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Instant;
-use std::{self, mem};
-use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
+use {Priority, SocketError, MAX_MSG_AGE_SECS, MSG_DROP_PRIORITY};
 
 pub struct UdpSock {
     inner: Option<Inner>,
@@ -34,7 +32,7 @@ impl UdpSock {
     }
 
     pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
-        let mut inner = self
+        let inner = self
             .inner
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
@@ -96,19 +94,14 @@ impl UdpSock {
     // Returns:
     //   - Ok(true):   the message has been successfully written.
     //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 Write event is already scheduled for next time.
+    //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
-    pub fn write<T: Serialize>(
-        &mut self,
-        poll: &Poll,
-        token: Token,
-        msg: Option<(T, Priority)>,
-    ) -> ::Res<bool> {
+    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let inner = self
             .inner
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
-        inner.write(poll, token, msg)
+        inner.write(msg)
     }
 }
 
@@ -191,8 +184,8 @@ impl Inner {
 
         loop {
             match self.sock.recv(&mut buffer) {
-                Ok(bytes_read) => {
-                    if bytes_read == 0 {
+                Ok(bytes_rxd) => {
+                    if bytes_rxd == 0 {
                         let e = Err(SocketError::ZeroByteRead);
                         if is_something_read {
                             return match self.read_from_buffer() {
@@ -203,7 +196,7 @@ impl Inner {
                             return e;
                         }
                     }
-                    self.read_buffer.push_back(buffer[..bytes_read].to_vec());
+                    self.read_buffer.push_back(buffer[..bytes_rxd].to_vec());
                     is_something_read = true;
                 }
                 Err(error) => {
@@ -240,14 +233,9 @@ impl Inner {
     // Returns:
     //   - Ok(true):   the message has been successfully written.
     //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 Write event is already scheduled for next time.
+    //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
-    fn write<T: Serialize>(
-        &mut self,
-        poll: &Poll,
-        token: Token,
-        msg: Option<(T, Priority)>,
-    ) -> ::Res<bool> {
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let expired_keys: Vec<u8> = self
             .write_queue
             .iter()
@@ -279,21 +267,22 @@ impl Inner {
             entry.push_back((Instant::now(), serialise(&msg)?));
         }
 
-        if self.current_write.is_none() {
-            let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
-                Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                None => return Ok(true),
+        loop {
+            let data = if let Some(data) = self.current_write.take() {
+                data
+            } else {
+                let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
+                    Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
+                    None => return Ok(true),
+                };
+                if empty {
+                    let _ = self.write_queue.remove(&key);
+                }
+                data
             };
-            if empty {
-                let _ = self.write_queue.remove(&key);
-            }
-            self.current_write = Some(data);
-        }
 
-        if let Some(data) = self.current_write.take() {
             match self.sock.send(&data) {
                 Ok(bytes_txd) => {
-                    let bytes_txd = bytes_txd as usize;
                     if bytes_txd < data.len() {
                         debug!(
                             "Partial datagram sent. Will likely be interpreted as corrupted.
@@ -307,24 +296,13 @@ impl Inner {
                         || error.kind() == ErrorKind::Interrupted
                     {
                         self.current_write = Some(data);
+                        return Ok(false);
                     } else {
                         return Err(From::from(error));
                     }
                 }
             }
         }
-
-        let done = self.current_write.is_none() && self.write_queue.is_empty();
-
-        let event_set = if done {
-            Ready::error() | Ready::hup() | Ready::readable()
-        } else {
-            Ready::error() | Ready::hup() | Ready::readable() | Ready::writable()
-        };
-
-        poll.reregister(self, token, event_set, PollOpt::edge())?;
-
-        Ok(done)
     }
 }
 
