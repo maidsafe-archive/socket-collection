@@ -28,6 +28,7 @@ pub use udt::{EpollLoop, Handle, Notifier, UdtSock};
 
 mod error;
 mod tcp_sock;
+mod udp;
 mod udt;
 
 /// Priority of a message to be sent by Crust. A lower value means a higher priority, so Priority 0

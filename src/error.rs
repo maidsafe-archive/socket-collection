@@ -47,9 +47,13 @@ quick_error! {
             display("Udt error: {}", e.err_msg)
             from()
         }
+        /// UDP Socket is not connected
+        UnconnectedUdpSocket {
+            description("UDP Socket is not connected")
+        }
         /// No UDT Epoll Loop
         NoUdtEpoll {
-            description("No UDT Epoll while registering/deregistering !")
+            description("No UDT Epoll while registering/deregistering")
         }
     }
 }
