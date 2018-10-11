@@ -5,9 +5,11 @@ use mio::{Evented, Poll, PollOpt, Ready, Token};
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr};
+use std::time::Duration;
 use std::time::Instant;
 use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 
@@ -31,6 +33,22 @@ impl TcpSock {
                 current_write: None,
             }),
         }
+    }
+
+    pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.stream.set_linger(dur)?)
+    }
+
+    pub fn local_addr(&self) -> ::Res<SocketAddr> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.stream.local_addr()?)
     }
 
     pub fn peer_addr(&self) -> ::Res<SocketAddr> {
@@ -77,6 +95,12 @@ impl TcpSock {
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
         inner.write(msg)
+    }
+}
+
+impl Debug for TcpSock {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "TcpSock: initialised = {}", self.inner.is_some())
     }
 }
 

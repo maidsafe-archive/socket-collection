@@ -11,7 +11,9 @@ use std::net::SocketAddr;
 use std::time::Instant;
 use std::{self, mem};
 use udt_extern::{SocketFamily, SocketType, UdtOpts, UdtSocket};
-use {Handle, Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
+use {
+    Handle, Priority, SocketError, UdpSock, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY,
+};
 
 const UDP_SNDBUF_SIZE: i32 = 512 * 1024;
 const UDP_RCVBUF_SIZE: i32 = 512 * 1024;
@@ -52,6 +54,10 @@ impl UdtSock {
 
     pub fn wrap_mio_sock(udp_sock: mio::net::UdpSocket, handle: Handle) -> ::Res<Self> {
         UdtSock::wrap_std_sock(mio_to_std_udp_sock(udp_sock), handle)
+    }
+
+    pub fn wrap_udp_sock(udp_sock: UdpSock, handle: Handle) -> ::Res<Self> {
+        UdtSock::wrap_mio_sock(udp_sock.into_underlying_sock()?, handle)
     }
 
     pub fn connect(&self, addr: &SocketAddr) -> ::Res<()> {

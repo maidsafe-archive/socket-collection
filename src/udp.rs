@@ -4,6 +4,7 @@ use mio::{Evented, Poll, PollOpt, Ready, Token};
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt::{self, Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -20,14 +21,17 @@ impl UdpSock {
                 sock,
                 peer: None,
                 read_buffer: Default::default(),
+                read_buffer_2: Default::default(),
                 read_len: 0,
                 write_queue: Default::default(),
                 current_write: None,
+                write_queue_2: Default::default(),
+                current_write_2: None,
             }),
         }
     }
 
-    pub fn bind(&self, addr: &SocketAddr) -> ::Res<Self> {
+    pub fn bind(addr: &SocketAddr) -> ::Res<Self> {
         Ok(Self::wrap(UdpSocket::bind(addr)?))
     }
 
@@ -89,6 +93,14 @@ impl UdpSock {
         inner.read()
     }
 
+    pub fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.read_frm()
+    }
+
     // Write a message to the socket.
     //
     // Returns:
@@ -102,6 +114,28 @@ impl UdpSock {
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
         inner.write(msg)
+    }
+
+    pub fn write_to<T: Serialize>(
+        &mut self,
+        msg: Option<(T, SocketAddr, Priority)>,
+    ) -> ::Res<bool> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.write_to(msg)
+    }
+
+    pub fn into_underlying_sock(mut self) -> ::Res<UdpSocket> {
+        let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.sock)
+    }
+}
+
+impl Debug for UdpSock {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "UdpSock: initialised = {}", self.inner.is_some())
     }
 }
 
@@ -159,9 +193,12 @@ struct Inner {
     sock: UdpSocket,
     peer: Option<SocketAddr>,
     read_buffer: VecDeque<Vec<u8>>,
+    read_buffer_2: VecDeque<(Vec<u8>, SocketAddr)>,
     read_len: usize,
     write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
     current_write: Option<Vec<u8>>,
+    write_queue_2: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>, SocketAddr)>>,
+    current_write_2: Option<(Vec<u8>, SocketAddr)>,
 }
 
 impl Inner {
@@ -226,6 +263,65 @@ impl Inner {
         // deserialise_with_limit() which will require us to use `Bounded` which is a type in
         // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
         Ok(Some(deserialise(&data)?))
+    }
+
+    fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
+        if let Some(pkg) = self.read_from_buffer_2()? {
+            return Ok(Some(pkg));
+        }
+
+        // the mio reading window is max at 64k (64 * 1024)
+        const BUF_LEN: usize = 64 * 1024;
+        let mut buffer = [0; BUF_LEN];
+        let mut is_something_read = false;
+
+        loop {
+            match self.sock.recv_from(&mut buffer) {
+                Ok((bytes_rxd, peer)) => {
+                    if bytes_rxd == 0 {
+                        let e = Err(SocketError::ZeroByteRead);
+                        if is_something_read {
+                            return match self.read_from_buffer_2() {
+                                r @ Ok(Some(_)) | r @ Err(_) => r,
+                                Ok(None) => e,
+                            };
+                        } else {
+                            return e;
+                        }
+                    }
+                    self.read_buffer_2
+                        .push_back((buffer[..bytes_rxd].to_vec(), peer));
+                    is_something_read = true;
+                }
+                Err(error) => {
+                    return if error.kind() == ErrorKind::WouldBlock
+                        || error.kind() == ErrorKind::Interrupted
+                    {
+                        if is_something_read {
+                            self.read_from_buffer_2()
+                        } else {
+                            Ok(None)
+                        }
+                    } else {
+                        Err(From::from(error))
+                    }
+                }
+            }
+        }
+    }
+
+    fn read_from_buffer_2<T: DeserializeOwned + Serialize>(
+        &mut self,
+    ) -> ::Res<Option<(T, SocketAddr)>> {
+        let (data, peer) = match self.read_buffer_2.pop_front() {
+            Some(pkg) => pkg,
+            None => return Ok(None),
+        };
+
+        // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
+        // deserialise_with_limit() which will require us to use `Bounded` which is a type in
+        // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
+        Ok(Some((deserialise(&data)?, peer)))
     }
 
     // Write a message to the socket.
@@ -296,6 +392,77 @@ impl Inner {
                         || error.kind() == ErrorKind::Interrupted
                     {
                         self.current_write = Some(data);
+                        return Ok(false);
+                    } else {
+                        return Err(From::from(error));
+                    }
+                }
+            }
+        }
+    }
+
+    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
+        let expired_keys: Vec<u8> = self
+            .write_queue_2
+            .iter()
+            .skip_while(|&(&priority, queue)| {
+                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
+                queue.front().map_or(true, |&(ref timestamp, _, _)| {
+                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
+                })
+            }).map(|(&priority, _)| priority)
+            .collect();
+        let dropped_msgs: usize = expired_keys
+            .iter()
+            .filter_map(|priority| self.write_queue_2.remove(priority))
+            .map(|queue| queue.len())
+            .sum();
+        if dropped_msgs > 0 {
+            trace!(
+                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
+                dropped_msgs,
+                expired_keys[0]
+            );
+        }
+
+        if let Some((msg, peer, priority)) = msg {
+            let entry = self
+                .write_queue_2
+                .entry(priority)
+                .or_insert_with(|| VecDeque::with_capacity(10));
+            entry.push_back((Instant::now(), serialise(&msg)?, peer));
+        }
+
+        loop {
+            let (data, peer) = if let Some(pkg) = self.current_write_2.take() {
+                pkg
+            } else {
+                let (key, (_time_stamp, data, peer), empty) =
+                    match self.write_queue_2.iter_mut().next() {
+                        Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
+                        None => return Ok(true),
+                    };
+                if empty {
+                    let _ = self.write_queue_2.remove(&key);
+                }
+                (data, peer)
+            };
+
+            match self.sock.send_to(&data, &peer) {
+                Ok(bytes_txd) => {
+                    if bytes_txd < data.len() {
+                        debug!(
+                            "Partial datagram sent. Will likely be interpreted as corrupted.
+                               Queued to be sent again."
+                        );
+                        self.current_write_2 = Some((data, peer));
+                    }
+                }
+                Err(error) => {
+                    if error.kind() == ErrorKind::WouldBlock
+                        || error.kind() == ErrorKind::Interrupted
+                    {
+                        self.current_write_2 = Some((data, peer));
                         return Ok(false);
                     } else {
                         return Err(From::from(error));
