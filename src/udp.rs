@@ -22,7 +22,6 @@ impl UdpSock {
                 peer: None,
                 read_buffer: Default::default(),
                 read_buffer_2: Default::default(),
-                read_len: 0,
                 write_queue: Default::default(),
                 current_write: None,
                 write_queue_2: Default::default(),
@@ -46,6 +45,22 @@ impl UdpSock {
         Ok(())
     }
 
+    pub fn local_addr(&self) -> ::Res<SocketAddr> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.sock.local_addr()?)
+    }
+
+    pub fn peer_addr(&self) -> ::Res<SocketAddr> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.peer.ok_or(SocketError::UnconnectedUdpSocket)?)
+    }
+
     pub fn set_ttl(&self, ttl: u32) -> ::Res<()> {
         let inner = self
             .inner
@@ -60,14 +75,6 @@ impl UdpSock {
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
         Ok(inner.sock.ttl()?)
-    }
-
-    pub fn peer_addr(&self) -> ::Res<SocketAddr> {
-        let inner = self
-            .inner
-            .as_ref()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.peer.ok_or(SocketError::UnconnectedUdpSocket)?)
     }
 
     pub fn take_error(&self) -> ::Res<Option<io::Error>> {
@@ -194,7 +201,6 @@ struct Inner {
     peer: Option<SocketAddr>,
     read_buffer: VecDeque<Vec<u8>>,
     read_buffer_2: VecDeque<(Vec<u8>, SocketAddr)>,
-    read_len: usize,
     write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
     current_write: Option<Vec<u8>>,
     write_queue_2: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>, SocketAddr)>>,
@@ -240,11 +246,7 @@ impl Inner {
                     return if error.kind() == ErrorKind::WouldBlock
                         || error.kind() == ErrorKind::Interrupted
                     {
-                        if is_something_read {
-                            self.read_from_buffer()
-                        } else {
-                            Ok(None)
-                        }
+                        self.read_from_buffer()
                     } else {
                         Err(From::from(error))
                     }
@@ -297,11 +299,7 @@ impl Inner {
                     return if error.kind() == ErrorKind::WouldBlock
                         || error.kind() == ErrorKind::Interrupted
                     {
-                        if is_something_read {
-                            self.read_from_buffer_2()
-                        } else {
-                            Ok(None)
-                        }
+                        self.read_from_buffer_2()
                     } else {
                         Err(From::from(error))
                     }
@@ -380,7 +378,7 @@ impl Inner {
             match self.sock.send(&data) {
                 Ok(bytes_txd) => {
                     if bytes_txd < data.len() {
-                        debug!(
+                        warn!(
                             "Partial datagram sent. Will likely be interpreted as corrupted.
                                Queued to be sent again."
                         );
@@ -451,7 +449,7 @@ impl Inner {
             match self.sock.send_to(&data, &peer) {
                 Ok(bytes_txd) => {
                     if bytes_txd < data.len() {
-                        debug!(
+                        warn!(
                             "Partial datagram sent. Will likely be interpreted as corrupted.
                                Queued to be sent again."
                         );
