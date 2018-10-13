@@ -11,7 +11,7 @@ version = "0.2.0"
 [dependencies]
 byteorder = "~1.1.0"
 #libudt4-sys = "~0.2.0"
-libudt4-sys = { git = "https://github.com/ustulation/udt-rs.git", branch = "fix-dangling-sockets" }
+libudt4-sys = { git = "https://github.com/ustulation/udt-rs.git" }
 log = "~0.3.6"
 maidsafe_utilities = "~0.15.0"
 mio = "~0.6.9"
@@ -19,5 +19,5 @@ quick-error = "~1.2.2"
 serde = "~1.0.25"
 serde_derive = "~1.0.25"
 #udt = "~0.2.0"
-udt = { git = "https://github.com/ustulation/udt-rs.git", branch = "fix-dangling-sockets" }
+udt = { git = "https://github.com/ustulation/udt-rs.git" }
 unwrap = "~1.1.0"
