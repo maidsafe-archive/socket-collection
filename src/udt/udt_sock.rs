@@ -408,6 +408,11 @@ fn mio_to_std_udp_sock(socket: mio::net::UdpSocket) -> std::net::UdpSocket {
 #[allow(unsafe_code)]
 #[cfg(target_family = "windows")]
 fn mio_to_std_udp_sock(_socket: mio::net::UdpSocket) -> std::net::UdpSocket {
-    use std::os::windows::io::{FromRawSocket, IntoRawSocket};
-    unsafe { FromRawFd::from_raw_socket(socket.into_raw_socket()) }
+    // FIXME: Currently mio does not have this facility: https://github.com/carllerche/mio/pull/859
+    //
+    // use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+    // unsafe { FromRawFd::from_raw_socket(socket.into_raw_socket()) }
+    unimplemented!(
+        "Currently mio does not have this facility: https://github.com/carllerche/mio/pull/859"
+    );
 }
