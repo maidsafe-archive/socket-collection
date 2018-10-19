@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
-use std::io::{self, Cursor, ErrorKind, Read, Write};
+use std::io::{self, Cursor, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Instant;
 use std::{self, mem};
