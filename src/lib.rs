@@ -19,16 +19,19 @@ extern crate maidsafe_utilities;
 extern crate mio;
 extern crate serde;
 extern crate udt as udt_extern;
+extern crate utp;
 
 pub use error::SocketError;
 pub use tcp_sock::TcpSock;
 pub use udp::UdpSock;
 pub use udt::{EpollLoop, Handle, Notifier, UdtSock};
+pub use utp_sock::UtpSock;
 
 mod error;
 mod tcp_sock;
 mod udp;
 mod udt;
+mod utp_sock;
 
 /// Priority of a message to be sent by Crust. A lower value means a higher priority, so Priority 0
 /// is the highest one. Low-priority messages will be preempted if need be to allow higher priority

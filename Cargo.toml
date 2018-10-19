@@ -10,14 +10,24 @@ version = "0.2.0"
 
 [dependencies]
 byteorder = "~1.1.0"
-#libudt4-sys = "~0.2.0"
-libudt4-sys = { git = "https://github.com/ustulation/udt-rs.git" }
 log = "~0.3.6"
 maidsafe_utilities = "~0.15.0"
 mio = "~0.6.9"
+net-literals = "0.1.2"
 quick-error = "~1.2.2"
 serde = "~1.0.25"
 serde_derive = "~1.0.25"
-#udt = "~0.2.0"
-udt = { git = "https://github.com/ustulation/udt-rs.git" }
 unwrap = "~1.1.0"
+
+[dependencies.libudt4-sys]
+git = "https://github.com/ustulation/udt-rs.git"
+
+[dependencies.udt]
+git = "https://github.com/ustulation/udt-rs.git"
+
+[dependencies.utp]
+git = "https://github.com/povilasb/rust-libutp.git"
+rev = "7c201cc"
+
+[dev-dependencies]
+rand = "0.5.5"

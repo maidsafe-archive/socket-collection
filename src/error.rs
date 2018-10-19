@@ -2,6 +2,7 @@ use maidsafe_utilities::serialisation::SerialisationError;
 use mio::timer::TimerError;
 use std::io;
 use udt_extern::UdtError;
+use utp::UtpError;
 
 quick_error! {
     /// Common module specific error
@@ -64,6 +65,11 @@ quick_error! {
         UdtNegativeBytesWrite(val: i32) {
             description("UDT Write has resulted in a negative result. This is an error value.")
             display("UDT Write has resulted in a negative result. This is an error value: {}", val)
+        }
+        /// uTP related error.
+        Utp(e: UtpError) {
+            display("uTP failure: {}", e)
+            from()
         }
     }
 }
