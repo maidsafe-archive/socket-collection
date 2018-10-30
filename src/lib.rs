@@ -11,8 +11,6 @@ extern crate log;
 #[macro_use]
 extern crate quick_error;
 #[macro_use]
-extern crate serde_derive;
-#[macro_use]
 extern crate unwrap;
 
 extern crate byteorder;

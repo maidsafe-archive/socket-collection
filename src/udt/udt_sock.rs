@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
-use std::io::{self, Cursor, ErrorKind, Read, Write};
+use std::io::{self, Cursor, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Instant;
 use std::{self, mem};
@@ -77,7 +77,7 @@ impl UdtSock {
     }
 
     pub fn take_error(&self) -> ::Res<Option<io::Error>> {
-        let inner = self
+        let _inner = self
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;

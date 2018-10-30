@@ -4,11 +4,9 @@ extern crate socket_collection;
 #[macro_use]
 extern crate unwrap;
 
-// use maidsafe_utilities::log;
-use maidsafe_utilities::thread::{self, Joiner};
+use maidsafe_utilities::thread;
 use mio::*;
 use socket_collection::UdpSock;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;

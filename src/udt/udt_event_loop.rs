@@ -25,7 +25,7 @@ impl EpollLoop {
         udt_extern::init();
 
         // Create it just now so that if it fails we can report it immediately
-        let mut epoll = Epoll::create()?;
+        let epoll = Epoll::create()?;
 
         let queued_actions = Arc::new(Mutex::new(HashSet::<QueuedAction>::default()));
         let queued_actions_weak = Arc::downgrade(&queued_actions);
