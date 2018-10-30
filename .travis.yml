@@ -1,0 +1,25 @@
+env:
+  global:
+    - RUST_BACKTRACE=1
+    - PATH=$PATH:$HOME/.cargo/bin
+os:
+  - linux
+  - osx
+  - windows
+language: rust
+rust:
+  - 1.29.2
+sudo: false
+cache:
+  cargo: true
+before_script:
+  - cargo install cargo-prune --force
+  - rustup component add rustfmt-preview
+  - rustup component add clippy-preview
+script:
+  - cargo fmt -- --check &&
+    cargo test --verbose --release &&
+    cargo clippy --verbose --release &&
+    cargo clippy --verbose --release --profile=test
+before_cache:
+  - cargo prune
