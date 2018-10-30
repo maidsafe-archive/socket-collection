@@ -93,6 +93,7 @@ impl Handle {
     }
 }
 
+#[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
 fn event_loop_impl<T: Notifier + Send + 'static>(
     mut epoll: Epoll,
     notifier: T,
