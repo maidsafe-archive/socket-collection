@@ -100,12 +100,13 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
 
         for event in events.iter() {
             match event.token() {
-                UDP0 => if event.kind().is_writable() && wouldblocked_cloned.load(Ordering::SeqCst)
+                UDP0 => if event.readiness().is_writable()
+                    && wouldblocked_cloned.load(Ordering::SeqCst)
                 {
                     unwrap!(tx.send(()));
                 },
                 UDP1 => {
-                    if !event.kind().is_readable() {
+                    if !event.readiness().is_readable() {
                         // Spurious wake
                         continue;
                     }
