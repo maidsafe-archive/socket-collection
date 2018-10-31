@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 
+/// TCP socket which by default is uninitialized.
 pub struct TcpSock {
     inner: Option<Inner>,
 }
@@ -251,47 +252,15 @@ impl Inner {
     //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        let expired_keys: Vec<u8> = self
-            .write_queue
-            .iter()
-            .skip_while(|&(&priority, queue)| {
-                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
-                queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
-                })
-            }).map(|(&priority, _)| priority)
-            .collect();
-        let dropped_msgs: usize = expired_keys
-            .iter()
-            .filter_map(|priority| self.write_queue.remove(priority))
-            .map(|queue| queue.len())
-            .sum();
-        if dropped_msgs > 0 {
-            trace!(
-                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
-                dropped_msgs,
-                expired_keys[0]
-            );
-        }
-
+        self.drop_expired();
         if let Some((msg, priority)) = msg {
-            let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
-
-            let _ = data.write_u32::<LittleEndian>(0);
-
-            serialise_into(&msg, &mut data)?;
-
-            let len = data.position() - mem::size_of::<u32>() as u64;
-            data.set_position(0);
-            data.write_u32::<LittleEndian>(len as u32)?;
-
-            let entry = self
-                .write_queue
-                .entry(priority)
-                .or_insert_with(|| VecDeque::with_capacity(10));
-            entry.push_back((Instant::now(), data.into_inner()));
+            self.enqueue_data(msg, priority)?;
         }
+        self.flush_write_until_would_block()
+    }
 
+    /// Returns `Ok(false)`, if write to the underlying stream would block.
+    fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
         loop {
             let data = if let Some(data) = self.current_write.take() {
                 data
@@ -325,6 +294,41 @@ impl Inner {
             }
         }
     }
+
+    fn enqueue_data<T: Serialize>(&mut self, msg: T, priority: Priority) -> ::Res<()> {
+        let buf = write_len_delimited(msg)?;
+        let entry = self
+            .write_queue
+            .entry(priority)
+            .or_insert_with(|| VecDeque::with_capacity(10));
+        entry.push_back((Instant::now(), buf));
+        Ok(())
+    }
+
+    fn drop_expired(&mut self) {
+        let expired_keys: Vec<u8> = self
+            .write_queue
+            .iter()
+            .skip_while(|&(&priority, queue)| {
+                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
+                queue.front().map_or(true, |&(ref timestamp, _)| {
+                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
+                })
+            }).map(|(&priority, _)| priority)
+            .collect();
+        let dropped_msgs: usize = expired_keys
+            .iter()
+            .filter_map(|priority| self.write_queue.remove(priority))
+            .map(|queue| queue.len())
+            .sum();
+        if dropped_msgs > 0 {
+            trace!(
+                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
+                dropped_msgs,
+                expired_keys[0]
+            );
+        }
+    }
 }
 
 impl Evented for Inner {
@@ -356,5 +360,37 @@ impl Evented for Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+/// Serialize given value and write to a buffer with 4 byte length header.
+fn write_len_delimited<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
+    let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
+
+    let _ = data.write_u32::<LittleEndian>(0);
+    serialise_into(&value, &mut data)?;
+    let len = data.position() - mem::size_of::<u32>() as u64;
+    data.set_position(0);
+    data.write_u32::<LittleEndian>(len as u32)?;
+
+    Ok(data.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maidsafe_utilities::serialisation::serialise;
+
+    mod write_len_delimited {
+        use super::*;
+
+        #[test]
+        fn it_writes_4_byte_data_length() {
+            let buf = unwrap!(write_len_delimited(vec![1u8, 2, 3]));
+
+            let exp_serialised = unwrap!(serialise(&vec![1u8, 2, 3]));
+
+            assert_eq!(usize::from(buf[0]), exp_serialised.len());
+        }
     }
 }
