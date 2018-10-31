@@ -28,8 +28,7 @@ impl TcpSock {
         TcpSock {
             inner: Some(Inner {
                 stream,
-                read_buffer: Vec::new(),
-                read_len: 0,
+                msg_reader: LenDelimitedReader::new(),
                 write_queue: BTreeMap::new(),
                 current_write: None,
             }),
@@ -158,8 +157,7 @@ impl Evented for TcpSock {
 
 struct Inner {
     stream: TcpStream,
-    read_buffer: Vec<u8>,
-    read_len: usize,
+    msg_reader: LenDelimitedReader,
     write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
     current_write: Option<Vec<u8>>,
 }
@@ -173,7 +171,7 @@ impl Inner {
     //                     again in the next invocation of the `ready` handler.
     //   - Err(error):     there was an error reading from the socket.
     fn read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
-        if let Some(message) = self.read_from_buffer()? {
+        if let Some(message) = self.msg_reader.try_read()? {
             return Ok(Some(message));
         }
 
@@ -187,7 +185,7 @@ impl Inner {
                     if bytes_rxd == 0 {
                         let e = Err(SocketError::ZeroByteRead);
                         if is_something_read {
-                            return match self.read_from_buffer() {
+                            return match self.msg_reader.try_read() {
                                 r @ Ok(Some(_)) | r @ Err(_) => r,
                                 Ok(None) => e,
                             };
@@ -195,7 +193,7 @@ impl Inner {
                             return e;
                         }
                     }
-                    self.read_buffer.extend_from_slice(&buffer[0..bytes_rxd]);
+                    self.msg_reader.put_buf(&buffer[..bytes_rxd]);
                     is_something_read = true;
                 }
                 Err(error) => {
@@ -203,7 +201,7 @@ impl Inner {
                         || error.kind() == ErrorKind::Interrupted
                     {
                         if is_something_read {
-                            self.read_from_buffer()
+                            self.msg_reader.try_read()
                         } else {
                             Ok(None)
                         }
@@ -213,35 +211,6 @@ impl Inner {
                 }
             }
         }
-    }
-
-    fn read_from_buffer<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
-        let u32_size = mem::size_of::<u32>();
-
-        if self.read_len == 0 {
-            if self.read_buffer.len() < u32_size {
-                return Ok(None);
-            }
-
-            self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
-
-            if self.read_len > MAX_PAYLOAD_SIZE {
-                return Err(SocketError::PayloadSizeProhibitive);
-            }
-
-            self.read_buffer = self.read_buffer[u32_size..].to_owned();
-        }
-
-        if self.read_len > self.read_buffer.len() {
-            return Ok(None);
-        }
-
-        let result = deserialise_from(&mut Cursor::new(&self.read_buffer))?;
-
-        self.read_buffer = self.read_buffer[self.read_len..].to_owned();
-        self.read_len = 0;
-
-        Ok(Some(result))
     }
 
     // Write a message to the socket.
@@ -374,6 +343,63 @@ fn write_len_delimited<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
     data.write_u32::<LittleEndian>(len as u32)?;
 
     Ok(data.into_inner())
+}
+
+/// Reads length delimited data frames.
+struct LenDelimitedReader {
+    read_buffer: Vec<u8>,
+    read_len: usize,
+}
+
+impl LenDelimitedReader {
+    /// Construct reader with empty read buffer.
+    fn new() -> Self {
+        Self {
+            read_buffer: Vec::new(),
+            read_len: 0,
+        }
+    }
+
+    /// Puts data buffer into the reader so that later when enough data is put it could be read and
+    /// deserialised.
+    fn put_buf(&mut self, buf: &[u8]) {
+        self.read_buffer.extend_from_slice(buf);
+    }
+
+    fn try_read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+        if self.read_len == 0 && !self.try_read_header()? {
+            return Ok(None);
+        }
+        if self.read_len > self.read_buffer.len() {
+            return Ok(None);
+        }
+
+        let result = deserialise_from(&mut Cursor::new(&self.read_buffer))?;
+        self.mark_read();
+        Ok(Some(result))
+    }
+
+    fn try_read_header(&mut self) -> ::Res<bool> {
+        let u32_size = mem::size_of::<u32>();
+        if self.read_buffer.len() < u32_size {
+            return Ok(false);
+        }
+
+        self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
+
+        if self.read_len > MAX_PAYLOAD_SIZE {
+            return Err(SocketError::PayloadSizeProhibitive);
+        }
+
+        self.read_buffer = self.read_buffer[u32_size..].to_owned();
+        Ok(true)
+    }
+
+    /// Shift read buffer and reset buffer to read length.
+    fn mark_read(&mut self) {
+        self.read_buffer = self.read_buffer[self.read_len..].to_owned();
+        self.read_len = 0;
+    }
 }
 
 #[cfg(test)]
