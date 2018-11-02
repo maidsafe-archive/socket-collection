@@ -1,7 +1,16 @@
 use maidsafe_utilities::serialisation::SerialisationError;
 use mio::timer::TimerError;
 use std::io;
+
+#[cfg(feature = "enable-udt")]
 use udt_extern::UdtError;
+#[cfg(not(feature = "enable-udt"))]
+#[derive(Debug)]
+/// NoOp without feature
+pub struct UdtError {
+    /// NoOp without feature
+    pub err_msg: String,
+}
 
 quick_error! {
     /// Common module specific error
