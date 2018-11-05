@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
-use std::io::{self, Cursor, ErrorKind, Read, Write};
+use std::io::{self, Cursor, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Instant;
 use std::{self, mem};
@@ -65,7 +65,8 @@ impl UdtSock {
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.stream.connect(*addr)?)
+        inner.stream.connect(*addr)?;
+        Ok(())
     }
 
     pub fn peer_addr(&self) -> ::Res<SocketAddr> {
@@ -77,7 +78,7 @@ impl UdtSock {
     }
 
     pub fn take_error(&self) -> ::Res<Option<io::Error>> {
-        let inner = self
+        let _inner = self
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
@@ -353,10 +354,10 @@ impl Evented for Inner {
         interest: Ready,
         _opts: PollOpt,
     ) -> io::Result<()> {
-        Ok(self
-            .handle
+        self.handle
             .register(self.stream, token, interest)
-            .map_err(|e| into_io_error(Some(e), ""))?)
+            .map_err(|e| into_io_error(Some(e), ""))?;
+        Ok(())
     }
 
     fn reregister(
@@ -370,10 +371,10 @@ impl Evented for Inner {
     }
 
     fn deregister(&self, _poll: &Poll) -> io::Result<()> {
-        Ok(self
-            .handle
+        self.handle
             .deregister(self.stream)
-            .map_err(|e| into_io_error(Some(e), ""))?)
+            .map_err(|e| into_io_error(Some(e), ""))?;
+        Ok(())
     }
 }
 

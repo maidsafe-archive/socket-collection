@@ -40,7 +40,8 @@ impl TcpSock {
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.stream.set_linger(dur)?)
+        inner.stream.set_linger(dur)?;
+        Ok(())
     }
 
     pub fn local_addr(&self) -> ::Res<SocketAddr> {

@@ -25,7 +25,7 @@ impl EpollLoop {
         udt_extern::init();
 
         // Create it just now so that if it fails we can report it immediately
-        let mut epoll = Epoll::create()?;
+        let epoll = Epoll::create()?;
 
         let queued_actions = Arc::new(Mutex::new(HashSet::<QueuedAction>::default()));
         let queued_actions_weak = Arc::downgrade(&queued_actions);
@@ -93,6 +93,7 @@ impl Handle {
     }
 }
 
+#[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
 fn event_loop_impl<T: Notifier + Send + 'static>(
     mut epoll: Epoll,
     notifier: T,

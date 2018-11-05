@@ -4,11 +4,9 @@ extern crate socket_collection;
 #[macro_use]
 extern crate unwrap;
 
-// use maidsafe_utilities::log;
-use maidsafe_utilities::thread::{self, Joiner};
+use maidsafe_utilities::thread;
 use mio::*;
 use socket_collection::UdpSock;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -102,12 +100,13 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
 
         for event in events.iter() {
             match event.token() {
-                UDP0 => if event.kind().is_writable() && wouldblocked_cloned.load(Ordering::SeqCst)
+                UDP0 => if event.readiness().is_writable()
+                    && wouldblocked_cloned.load(Ordering::SeqCst)
                 {
                     unwrap!(tx.send(()));
                 },
                 UDP1 => {
-                    if !event.kind().is_readable() {
+                    if !event.readiness().is_readable() {
                         // Spurious wake
                         continue;
                     }
