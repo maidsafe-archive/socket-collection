@@ -13,13 +13,21 @@ sudo: false
 cache:
   cargo: true
 before_script:
-  - cargo install cargo-prune --force
-  - rustup component add rustfmt-preview
-  - rustup component add clippy-preview
+  - if ! cargo prune --version | grep -q "0.1.8"; then
+      cargo install cargo-prune --vers="0.1.8" --force;
+    fi
+  - if ! rustfmt --version | grep -q "0.99.1-stable"; then
+      rustup component add rustfmt-preview;
+    fi
+  - if ! cargo clippy --version | grep -q "0.0.212"; then
+      rustup component add clippy-preview;
+    fi
 script:
   - cargo fmt -- --check &&
-    cargo test --verbose --release &&
-    cargo clippy --verbose --release &&
-    cargo clippy --verbose --release --profile=test
+    cargo test --verbose --release
+  - if [ "${TRAVIS_OS_NAME}" = linux ]; then
+      cargo clippy --verbose --release &&
+      cargo clippy --verbose --release --profile=test
+    fi
 before_cache:
   - cargo prune
