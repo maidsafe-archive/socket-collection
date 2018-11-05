@@ -1,5 +1,4 @@
 use maidsafe_utilities::serialisation::SerialisationError;
-use mio::timer::TimerError;
 use std::io;
 
 #[cfg(feature = "enable-udt")]
@@ -36,13 +35,6 @@ quick_error! {
         Serialisation(e: SerialisationError) {
             description(e.description())
             display("Serialisation error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Timer error
-        Timer(e: TimerError) {
-            description(e.description())
-            display("Timer error: {}", e)
             cause(e)
             from()
         }

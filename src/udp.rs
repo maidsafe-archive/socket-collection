@@ -66,7 +66,8 @@ impl UdpSock {
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.sock.set_ttl(ttl)?)
+        inner.sock.set_ttl(ttl)?;
+        Ok(())
     }
 
     pub fn ttl(&self) -> ::Res<u32> {
