@@ -11,7 +11,7 @@ use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
 use std::time::Instant;
-use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
+use {Priority, SocketConfig, SocketError};
 
 /// TCP socket which by default is uninitialized.
 pub struct TcpSock {
@@ -19,20 +19,29 @@ pub struct TcpSock {
 }
 
 impl TcpSock {
-    pub fn connect(addr: &SocketAddr) -> ::Res<Self> {
+    /// Starts TCP connection and uses given socket configuration. Returns immediately, so make
+    /// sure to wait until the socket becomes writable.
+    pub fn connect_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
         let stream = TcpStream::connect(addr)?;
-        Ok(Self::wrap(stream))
+        Ok(Self::wrap_with_conf(stream, conf))
     }
 
-    pub fn wrap(stream: TcpStream) -> Self {
+    /// Starts TCP connection. Returns immediately, so make sure to wait until the socket becomes
+    /// writable.
+    pub fn connect(addr: &SocketAddr) -> ::Res<Self> {
+        Self::connect_with_conf(addr, SocketConfig::default())
+    }
+
+    /// Wraps `TcpStream` and uses given socket configuration.
+    pub fn wrap_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
         TcpSock {
-            inner: Some(Inner {
-                stream,
-                msg_reader: LenDelimitedReader::new(),
-                write_queue: BTreeMap::new(),
-                current_write: None,
-            }),
+            inner: Some(Inner::new(stream, conf)),
         }
+    }
+
+    /// Wraps `TcpStream` and uses default socket configuration.
+    pub fn wrap(stream: TcpStream) -> Self {
+        Self::wrap_with_conf(stream, SocketConfig::default())
     }
 
     pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
@@ -160,9 +169,20 @@ struct Inner {
     msg_reader: LenDelimitedReader,
     write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
     current_write: Option<Vec<u8>>,
+    conf: SocketConfig,
 }
 
 impl Inner {
+    fn new(stream: TcpStream, conf: SocketConfig) -> Self {
+        Self {
+            stream,
+            msg_reader: LenDelimitedReader::new(conf.max_payload_size),
+            write_queue: BTreeMap::new(),
+            current_write: None,
+            conf,
+        }
+    }
+
     // Read message from the socket. Call this from inside the `ready` handler.
     //
     // Returns:
@@ -279,9 +299,9 @@ impl Inner {
             .write_queue
             .iter()
             .skip_while(|&(&priority, queue)| {
-                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
+                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
                 queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
+                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
                 })
             }).map(|(&priority, _)| priority)
             .collect();
@@ -349,14 +369,16 @@ fn write_len_delimited<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
 struct LenDelimitedReader {
     read_buffer: Vec<u8>,
     read_len: usize,
+    max_payload_size: usize,
 }
 
 impl LenDelimitedReader {
     /// Construct reader with empty read buffer.
-    fn new() -> Self {
+    fn new(max_payload_size: usize) -> Self {
         Self {
             read_buffer: Vec::new(),
             read_len: 0,
+            max_payload_size,
         }
     }
 
@@ -387,7 +409,7 @@ impl LenDelimitedReader {
 
         self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
 
-        if self.read_len > MAX_PAYLOAD_SIZE {
+        if self.read_len > self.max_payload_size {
             return Err(SocketError::PayloadSizeProhibitive);
         }
 
