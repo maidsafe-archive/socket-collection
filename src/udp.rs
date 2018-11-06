@@ -8,30 +8,33 @@ use std::fmt::{self, Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Instant;
-use {Priority, SocketError, MAX_MSG_AGE_SECS, MSG_DROP_PRIORITY};
+use {Priority, SocketConfig, SocketError};
 
 pub struct UdpSock {
     inner: Option<Inner>,
 }
 
 impl UdpSock {
-    pub fn wrap(sock: UdpSocket) -> Self {
+    /// Wrap `UdpSocket` and use given socket configuration.
+    pub fn wrap_with_conf(sock: UdpSocket, conf: SocketConfig) -> Self {
         Self {
-            inner: Some(Inner {
-                sock,
-                peer: None,
-                read_buffer: Default::default(),
-                read_buffer_2: Default::default(),
-                write_queue: Default::default(),
-                current_write: None,
-                write_queue_2: Default::default(),
-                current_write_2: None,
-            }),
+            inner: Some(Inner::new(sock, conf)),
         }
     }
 
+    /// Wrap `UdpSocket` and use default socket configuration.
+    pub fn wrap(sock: UdpSocket) -> Self {
+        Self::wrap_with_conf(sock, SocketConfig::default())
+    }
+
+    /// Create new `UdpSock` bound to the given address with given configuration.
+    pub fn bind_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
+        Ok(Self::wrap_with_conf(UdpSocket::bind(addr)?, conf))
+    }
+
+    /// Create new `UdpSock` bound to the given address with default configuration.
     pub fn bind(addr: &SocketAddr) -> ::Res<Self> {
-        Ok(Self::wrap(UdpSocket::bind(addr)?))
+        Self::bind_with_conf(addr, SocketConfig::default())
     }
 
     pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
@@ -206,9 +209,24 @@ struct Inner {
     current_write: Option<Vec<u8>>,
     write_queue_2: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>, SocketAddr)>>,
     current_write_2: Option<(Vec<u8>, SocketAddr)>,
+    conf: SocketConfig,
 }
 
 impl Inner {
+    fn new(sock: UdpSocket, conf: SocketConfig) -> Self {
+        Self {
+            sock,
+            peer: None,
+            read_buffer: Default::default(),
+            read_buffer_2: Default::default(),
+            write_queue: Default::default(),
+            current_write: None,
+            write_queue_2: Default::default(),
+            current_write_2: None,
+            conf,
+        }
+    }
+
     // Read message from the socket. Call this from inside the `ready` handler.
     //
     // Returns:
@@ -335,9 +353,9 @@ impl Inner {
             .write_queue
             .iter()
             .skip_while(|&(&priority, queue)| {
-                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
+                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
                 queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
+                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
                 })
             }).map(|(&priority, _)| priority)
             .collect();
@@ -405,9 +423,9 @@ impl Inner {
             .write_queue_2
             .iter()
             .skip_while(|&(&priority, queue)| {
-                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
+                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
                 queue.front().map_or(true, |&(ref timestamp, _, _)| {
-                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
+                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
                 })
             }).map(|(&priority, _)| priority)
             .collect();
