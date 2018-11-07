@@ -251,17 +251,14 @@ impl Inner {
     /// Returns `Ok(false)`, if write to the underlying stream would block.
     fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
         loop {
-            let data = if let Some(data) = self.current_write.take() {
+            let data = if let Some(data) = self
+                .current_write
+                .take()
+                .or_else(|| next_out_msg(&mut self.write_queue))
+            {
                 data
             } else {
-                let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
-                    Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                    None => return Ok(true),
-                };
-                if empty {
-                    let _ = self.write_queue.remove(&key);
-                }
-                data
+                return Ok(true);
             };
 
             match self.stream.write(&data) {
@@ -309,6 +306,20 @@ impl Inner {
             );
         }
     }
+}
+
+/// Returns next outgoing message. Messages with lower priority number are first.
+fn next_out_msg(
+    write_queue: &mut BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+) -> Option<Vec<u8>> {
+    let (key, (_time_stamp, data), empty) = match write_queue.iter_mut().next() {
+        Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
+        None => return None,
+    };
+    if empty {
+        let _ = write_queue.remove(&key);
+    }
+    Some(data)
 }
 
 /// Returns a list of queues with expired messages.
@@ -575,6 +586,67 @@ mod tests {
             let expired = expired_queues(&queues, &conf);
 
             assert_eq!(expired, vec![1, 4]);
+        }
+    }
+
+    mod next_out_msg {
+        use super::*;
+        use std::ops::Sub;
+
+        #[test]
+        fn it_returns_none_if_no_data_is_queued() {
+            let mut queues = BTreeMap::new();
+
+            let next_msg = next_out_msg(&mut queues);
+
+            assert!(next_msg.is_none());
+        }
+
+        #[test]
+        fn it_returns_next_message_when_data_is_queued() {
+            let mut queues = BTreeMap::new();
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(1, queue);
+
+            let next_msg = next_out_msg(&mut queues);
+
+            assert_eq!(next_msg, Some(vec![1, 2, 3]));
+        }
+
+        #[test]
+        fn it_returns_next_message_from_lower_priority_queue() {
+            let mut queues = BTreeMap::new();
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            queue.push_back((queued_at, vec![4, 5, 6]));
+            let _ = queues.insert(2, queue);
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(1, queue);
+
+            let next_msg = next_out_msg(&mut queues);
+
+            assert_eq!(next_msg, Some(vec![1, 2, 3]));
+        }
+
+        #[test]
+        fn it_removes_queue_if_it_had_only_1_element() {
+            let mut queues = BTreeMap::new();
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(1, queue);
+
+            let _ = next_out_msg(&mut queues);
+
+            assert_eq!(queues.len(), 0);
         }
     }
 }
