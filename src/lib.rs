@@ -31,6 +31,7 @@ pub use udp::UdpSock;
 pub use udt::{EpollLoop, Handle, Notifier, UdtSock};
 
 mod error;
+mod out_queue;
 mod tcp_sock;
 mod udp;
 

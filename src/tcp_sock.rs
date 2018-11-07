@@ -2,15 +2,14 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
 use mio::tcp::TcpStream;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
+use out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
-use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
-use std::time::Instant;
 use {Priority, SocketConfig, SocketError};
 
 /// TCP socket which by default is uninitialized.
@@ -167,9 +166,8 @@ impl Evented for TcpSock {
 struct Inner {
     stream: TcpStream,
     msg_reader: LenDelimitedReader,
-    write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+    out_queue: OutQueue,
     current_write: Option<Vec<u8>>,
-    conf: SocketConfig,
 }
 
 impl Inner {
@@ -177,9 +175,8 @@ impl Inner {
         Self {
             stream,
             msg_reader: LenDelimitedReader::new(conf.max_payload_size),
-            write_queue: BTreeMap::new(),
+            out_queue: OutQueue::new(conf),
             current_write: None,
-            conf,
         }
     }
 
@@ -241,7 +238,7 @@ impl Inner {
     //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        self.drop_expired();
+        self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
             self.enqueue_data(msg, priority)?;
         }
@@ -254,7 +251,7 @@ impl Inner {
             let data = if let Some(data) = self
                 .current_write
                 .take()
-                .or_else(|| next_out_msg(&mut self.write_queue))
+                .or_else(|| self.out_queue.next_msg())
             {
                 data
             } else {
@@ -283,63 +280,9 @@ impl Inner {
 
     fn enqueue_data<T: Serialize>(&mut self, msg: T, priority: Priority) -> ::Res<()> {
         let buf = write_len_delimited(msg)?;
-        let entry = self
-            .write_queue
-            .entry(priority)
-            .or_insert_with(|| VecDeque::with_capacity(10));
-        entry.push_back((Instant::now(), buf));
+        self.out_queue.push(buf, priority);
         Ok(())
     }
-
-    fn drop_expired(&mut self) {
-        let expired_keys = expired_queues(&self.write_queue, &self.conf);
-        let dropped_msgs: usize = expired_keys
-            .iter()
-            .filter_map(|priority| self.write_queue.remove(priority))
-            .map(|queue| queue.len())
-            .sum();
-        if dropped_msgs > 0 {
-            trace!(
-                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
-                dropped_msgs,
-                expired_keys[0]
-            );
-        }
-    }
-}
-
-/// Returns next outgoing message. Messages with lower priority number are first.
-fn next_out_msg(
-    write_queue: &mut BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
-) -> Option<Vec<u8>> {
-    let (key, (_time_stamp, data), empty) = match write_queue.iter_mut().next() {
-        Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-        None => return None,
-    };
-    if empty {
-        let _ = write_queue.remove(&key);
-    }
-    Some(data)
-}
-
-/// Returns a list of queues with expired messages.
-fn expired_queues(
-    queues: &BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
-    conf: &SocketConfig,
-) -> Vec<u8> {
-    queues
-        .iter()
-        .filter(|&(&priority, queue)| !is_queue_valid(priority, queue, &conf))
-        .map(|(&priority, _)| priority)
-        .collect()
-}
-
-/// Checks if given message queue should not be dropped.
-fn is_queue_valid(priority: u8, queue: &VecDeque<(Instant, Vec<u8>)>, conf: &SocketConfig) -> bool {
-    priority < conf.msg_drop_priority || // Don't drop high-priority messages.
-    queue.front().map_or(true, |&(ref timestamp, _)| {
-        timestamp.elapsed().as_secs() <= conf.max_msg_age_secs
-    })
 }
 
 impl Evented for Inner {
@@ -461,192 +404,6 @@ mod tests {
             let exp_serialised = unwrap!(serialise(&vec![1u8, 2, 3]));
 
             assert_eq!(usize::from(buf[0]), exp_serialised.len());
-        }
-    }
-
-    mod is_queue_valid {
-        use super::*;
-
-        #[test]
-        fn it_returns_true_when_queue_priority_is_smaller_than_minimum_drop_priority() {
-            let mut conf = SocketConfig::default();
-            conf.msg_drop_priority = 2;
-            let queue = VecDeque::new();
-
-            let retain = is_queue_valid(1, &queue, &conf);
-
-            assert!(retain);
-        }
-
-        mod when_queue_priority_is_dropable {
-            use super::*;
-            use std::ops::Sub;
-
-            #[test]
-            fn it_returns_true_when_queue_is_empty() {
-                let mut conf = SocketConfig::default();
-                conf.msg_drop_priority = 2;
-                let queue = VecDeque::new();
-
-                let retain = is_queue_valid(2, &queue, &conf);
-
-                assert!(retain);
-            }
-
-            #[test]
-            fn it_returns_false_when_first_queue_is_expired() {
-                let mut conf = SocketConfig::default();
-                conf.msg_drop_priority = 2;
-                conf.max_msg_age_secs = 10;
-                let mut queue = VecDeque::new();
-                let queued_at = Instant::now().sub(Duration::from_secs(100));
-                queue.push_back((queued_at, vec![1, 2, 3]));
-
-                let retain = is_queue_valid(2, &queue, &conf);
-
-                assert!(!retain);
-            }
-
-            #[test]
-            fn it_returns_true_when_first_queue_item_is_not_expired() {
-                let mut conf = SocketConfig::default();
-                conf.msg_drop_priority = 2;
-                conf.max_msg_age_secs = 10;
-                let mut queue = VecDeque::new();
-                let queued_at = Instant::now().sub(Duration::from_secs(5));
-                queue.push_back((queued_at, vec![1, 2, 3]));
-
-                let retain = is_queue_valid(2, &queue, &conf);
-
-                assert!(retain);
-            }
-        }
-    }
-
-    mod expired_queues {
-        use super::*;
-        use std::ops::Sub;
-
-        #[test]
-        fn it_returns_list_of_expired_queues() {
-            let mut conf = SocketConfig::default();
-            conf.msg_drop_priority = 1;
-            conf.max_msg_age_secs = 10;
-
-            let mut queues = BTreeMap::new();
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(5));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(1, queue);
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(100));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(2, queue);
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(200));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(3, queue);
-
-            let expired = expired_queues(&queues, &conf);
-
-            assert_eq!(expired, vec![2, 3]);
-        }
-
-        #[test]
-        fn when_first_queue_is_expired_it_wont_check_any_further() {
-            let mut conf = SocketConfig::default();
-            conf.msg_drop_priority = 1;
-            conf.max_msg_age_secs = 10;
-
-            let mut queues = BTreeMap::new();
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(100));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(1, queue);
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(5));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(2, queue);
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(6));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(3, queue);
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(200));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(4, queue);
-
-            let expired = expired_queues(&queues, &conf);
-
-            assert_eq!(expired, vec![1, 4]);
-        }
-    }
-
-    mod next_out_msg {
-        use super::*;
-        use std::ops::Sub;
-
-        #[test]
-        fn it_returns_none_if_no_data_is_queued() {
-            let mut queues = BTreeMap::new();
-
-            let next_msg = next_out_msg(&mut queues);
-
-            assert!(next_msg.is_none());
-        }
-
-        #[test]
-        fn it_returns_next_message_when_data_is_queued() {
-            let mut queues = BTreeMap::new();
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(5));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(1, queue);
-
-            let next_msg = next_out_msg(&mut queues);
-
-            assert_eq!(next_msg, Some(vec![1, 2, 3]));
-        }
-
-        #[test]
-        fn it_returns_next_message_from_lower_priority_queue() {
-            let mut queues = BTreeMap::new();
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(5));
-            queue.push_back((queued_at, vec![4, 5, 6]));
-            let _ = queues.insert(2, queue);
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(5));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(1, queue);
-
-            let next_msg = next_out_msg(&mut queues);
-
-            assert_eq!(next_msg, Some(vec![1, 2, 3]));
-        }
-
-        #[test]
-        fn it_removes_queue_if_it_had_only_1_element() {
-            let mut queues = BTreeMap::new();
-
-            let mut queue = VecDeque::new();
-            let queued_at = Instant::now().sub(Duration::from_secs(5));
-            queue.push_back((queued_at, vec![1, 2, 3]));
-            let _ = queues.insert(1, queue);
-
-            let _ = next_out_msg(&mut queues);
-
-            assert_eq!(queues.len(), 0);
         }
     }
 }
