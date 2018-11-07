@@ -295,16 +295,7 @@ impl Inner {
     }
 
     fn drop_expired(&mut self) {
-        let expired_keys: Vec<u8> = self
-            .write_queue
-            .iter()
-            .skip_while(|&(&priority, queue)| {
-                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
-                queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
-                })
-            }).map(|(&priority, _)| priority)
-            .collect();
+        let expired_keys = expired_queues(&self.write_queue, &self.conf);
         let dropped_msgs: usize = expired_keys
             .iter()
             .filter_map(|priority| self.write_queue.remove(priority))
@@ -318,6 +309,24 @@ impl Inner {
             );
         }
     }
+}
+
+/// Returns a list of queues with expired messages.
+fn expired_queues(queues: &BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>, conf: &SocketConfig) -> Vec<u8> {
+    queues
+        .iter()
+        // TODO(povilas): I think we should use .filter(!is_queue_valid) instead of .skip_while
+        .skip_while(|&(&priority, queue)| is_queue_valid(priority, queue, &conf))
+        .map(|(&priority, _)| priority)
+        .collect()
+}
+
+/// Checks if given message queue should not be dropped.
+fn is_queue_valid(priority: u8, queue: &VecDeque<(Instant, Vec<u8>)>, conf: &SocketConfig) -> bool {
+    priority < conf.msg_drop_priority || // Don't drop high-priority messages.
+    queue.front().map_or(true, |&(ref timestamp, _)| {
+        timestamp.elapsed().as_secs() <= conf.max_msg_age_secs
+    })
 }
 
 impl Evented for Inner {
@@ -439,6 +448,132 @@ mod tests {
             let exp_serialised = unwrap!(serialise(&vec![1u8, 2, 3]));
 
             assert_eq!(usize::from(buf[0]), exp_serialised.len());
+        }
+    }
+
+    mod is_queue_valid {
+        use super::*;
+
+        #[test]
+        fn it_returns_true_when_queue_priority_is_smaller_than_minimum_drop_priority() {
+            let mut conf = SocketConfig::default();
+            conf.msg_drop_priority = 2;
+            let queue = VecDeque::new();
+
+            let retain = is_queue_valid(1, &queue, &conf);
+
+            assert!(retain);
+        }
+
+        mod when_queue_priority_is_dropable {
+            use super::*;
+            use std::ops::Sub;
+
+            #[test]
+            fn it_returns_true_when_queue_is_empty() {
+                let mut conf = SocketConfig::default();
+                conf.msg_drop_priority = 2;
+                let queue = VecDeque::new();
+
+                let retain = is_queue_valid(2, &queue, &conf);
+
+                assert!(retain);
+            }
+
+            #[test]
+            fn it_returns_false_when_first_queue_is_expired() {
+                let mut conf = SocketConfig::default();
+                conf.msg_drop_priority = 2;
+                conf.max_msg_age_secs = 10;
+                let mut queue = VecDeque::new();
+                let queued_at = Instant::now().sub(Duration::from_secs(100));
+                queue.push_back((queued_at, vec![1, 2, 3]));
+
+                let retain = is_queue_valid(2, &queue, &conf);
+
+                assert!(!retain);
+            }
+
+            #[test]
+            fn it_returns_true_when_first_queue_item_is_not_expired() {
+                let mut conf = SocketConfig::default();
+                conf.msg_drop_priority = 2;
+                conf.max_msg_age_secs = 10;
+                let mut queue = VecDeque::new();
+                let queued_at = Instant::now().sub(Duration::from_secs(5));
+                queue.push_back((queued_at, vec![1, 2, 3]));
+
+                let retain = is_queue_valid(2, &queue, &conf);
+
+                assert!(retain);
+            }
+        }
+    }
+
+    mod expired_queues {
+        use super::*;
+        use std::ops::Sub;
+
+        #[test]
+        fn it_returns_list_of_expired_queues() {
+            let mut conf = SocketConfig::default();
+            conf.msg_drop_priority = 1;
+            conf.max_msg_age_secs = 10;
+
+            let mut queues = BTreeMap::new();
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(1, queue);
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(100));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(2, queue);
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(200));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(3, queue);
+
+            let expired = expired_queues(&queues, &conf);
+
+            assert_eq!(expired, vec![2, 3]);
+        }
+
+        #[test]
+        fn when_first_queue_is_expired_it_wont_check_any_further() {
+            let mut conf = SocketConfig::default();
+            conf.msg_drop_priority = 1;
+            conf.max_msg_age_secs = 10;
+
+            let mut queues = BTreeMap::new();
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(100));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(1, queue);
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(2, queue);
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(6));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(3, queue);
+
+            let mut queue = VecDeque::new();
+            let queued_at = Instant::now().sub(Duration::from_secs(200));
+            queue.push_back((queued_at, vec![1, 2, 3]));
+            let _ = queues.insert(4, queue);
+
+            let expired = expired_queues(&queues, &conf);
+
+            // NOTE(povilas): this is unexpected behavior to me. I expected it to return [1, 4]
+            assert_eq!(expired, vec![1, 2, 3, 4]);
         }
     }
 }
