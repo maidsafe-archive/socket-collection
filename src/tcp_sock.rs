@@ -238,7 +238,7 @@ impl Inner {
     //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        self.out_queue.drop_expired();
+        let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
             self.enqueue_data(msg, priority)?;
         }

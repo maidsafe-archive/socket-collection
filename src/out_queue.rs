@@ -32,7 +32,7 @@ impl OutQueue {
     }
 
     /// Drop expired messages.
-    pub fn drop_expired(&mut self) {
+    pub fn drop_expired(&mut self) -> usize {
         let expired_keys = self.expired_queues();
         let dropped_msgs: usize = expired_keys
             .iter()
@@ -46,6 +46,7 @@ impl OutQueue {
                 expired_keys[0]
             );
         }
+        dropped_msgs
     }
 
     /// Returns next outgoing message. Messages with lower priority number are first.
@@ -201,6 +202,52 @@ mod tests {
             let expired = out_queue.expired_queues();
 
             assert_eq!(expired, vec![1, 4]);
+        }
+    }
+
+    mod drop_expired {
+        use super::*;
+        use std::ops::Sub;
+
+        #[test]
+        fn it_drops_queues_with_expired_messages() {
+            let mut conf = SocketConfig::default();
+            conf.msg_drop_priority = 1;
+            conf.max_msg_age_secs = 10;
+            let mut out_queue = OutQueue::new(conf);
+
+            let queued_at = Instant::now().sub(Duration::from_secs(5));
+            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+
+            let queued_at = Instant::now().sub(Duration::from_secs(100));
+            out_queue.push_at(vec![4, 5, 6], 2, queued_at);
+
+            let queued_at = Instant::now().sub(Duration::from_secs(200));
+            out_queue.push_at(vec![7, 8, 9], 3, queued_at);
+
+            let dropped = out_queue.drop_expired();
+
+            assert_eq!(dropped, 2);
+            assert_eq!(out_queue.next_msg(), Some(vec![1, 2, 3]));
+        }
+
+        #[test]
+        fn it_does_not_drop_expired_message_whose_priority_is_lower_than_drop_priority() {
+            let mut conf = SocketConfig::default();
+            conf.msg_drop_priority = 2;
+            conf.max_msg_age_secs = 10;
+            let mut out_queue = OutQueue::new(conf);
+
+            let queued_at = Instant::now().sub(Duration::from_secs(100));
+            out_queue.push_at(vec![1, 2, 3], 2, queued_at);
+
+            let queued_at = Instant::now().sub(Duration::from_secs(200));
+            out_queue.push_at(vec![3, 4, 5], 1, queued_at);
+
+            let dropped = out_queue.drop_expired();
+
+            assert_eq!(dropped, 1);
+            assert_eq!(out_queue.next_msg(), Some(vec![3, 4, 5]));
         }
     }
 
