@@ -1,11 +1,11 @@
 [package]
-authors = ["ustulation <ustulation@gmail.com>"]
-description = "NAT Traversal for P2P communication"
+authors = ["MaidSafe Developers <dev@maidsafe.net>"]
+description = "Collection of sockets wrapped for convenience "
 documentation = "https://docs.rs/socket-collection/"
 license = "MIT OR BSD-3-Clause"
 name = "socket-collection"
 readme = "README.md"
-repository = "https://github.com/ustulation/socket-collection"
+repository = "https://github.com/maidsafe/socket-collection"
 version = "0.2.0"
 
 [dependencies]
