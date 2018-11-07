@@ -312,11 +312,13 @@ impl Inner {
 }
 
 /// Returns a list of queues with expired messages.
-fn expired_queues(queues: &BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>, conf: &SocketConfig) -> Vec<u8> {
+fn expired_queues(
+    queues: &BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+    conf: &SocketConfig,
+) -> Vec<u8> {
     queues
         .iter()
-        // TODO(povilas): I think we should use .filter(!is_queue_valid) instead of .skip_while
-        .skip_while(|&(&priority, queue)| is_queue_valid(priority, queue, &conf))
+        .filter(|&(&priority, queue)| !is_queue_valid(priority, queue, &conf))
         .map(|(&priority, _)| priority)
         .collect()
 }
@@ -572,8 +574,7 @@ mod tests {
 
             let expired = expired_queues(&queues, &conf);
 
-            // NOTE(povilas): this is unexpected behavior to me. I expected it to return [1, 4]
-            assert_eq!(expired, vec![1, 2, 3, 4]);
+            assert_eq!(expired, vec![1, 4]);
         }
     }
 }
