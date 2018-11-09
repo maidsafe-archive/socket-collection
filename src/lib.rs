@@ -14,6 +14,7 @@ extern crate quick_error;
 extern crate unwrap;
 
 extern crate byteorder;
+extern crate libc;
 extern crate maidsafe_utilities;
 extern crate mio;
 extern crate serde;
@@ -34,6 +35,7 @@ mod error;
 mod out_queue;
 mod tcp_sock;
 mod udp;
+mod utils;
 
 #[cfg(feature = "enable-udt")]
 mod udt;
@@ -54,6 +56,15 @@ pub struct SocketConfig {
     pub msg_drop_priority: u8,
     /// Maximum age of a message waiting to be sent. If a message is older, the queue is dropped.
     pub max_msg_age_secs: u64,
+    /// All 3 configurable TCP keep alive parameters:
+    ///
+    /// 1. TCP_KEEPIDLE - wait for n inactivity seconds before start sending keep alive requests
+    /// 2. TCP_KEEPINTVL - send keep alive packet every n seconds
+    /// 3. TCP_KEEPCNT - terminate connection if no response is recevied after this count of keep
+    ///                  alive packets was sent.
+    ///
+    /// By default keep alive is not set.
+    pub keep_alive: Option<(u32, u32, u32)>,
 }
 
 impl Default for SocketConfig {
@@ -62,6 +73,7 @@ impl Default for SocketConfig {
             max_payload_size: 2 * 1024 * 1024,
             msg_drop_priority: 2,
             max_msg_age_secs: 60,
+            keep_alive: None,
         }
     }
 }
