@@ -10,6 +10,7 @@ use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
+#[cfg(target_os = "linux")]
 use utils::set_keep_alive;
 use {Priority, SocketConfig, SocketError};
 
@@ -23,6 +24,7 @@ impl TcpSock {
     /// sure to wait until the socket becomes writable.
     pub fn connect_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
         let stream = TcpStream::connect(addr)?;
+        #[cfg(target_os = "linux")]
         set_keep_alive(&stream, &conf)?;
 
         Ok(Self::wrap_with_conf(stream, conf))

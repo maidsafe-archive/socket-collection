@@ -1,3 +1,6 @@
+#![cfg(target_os = "linux")]
+#![cfg(feature = "net_sim")]
+
 #[macro_use]
 extern crate unwrap;
 extern crate futures;
@@ -16,7 +19,6 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
 use std::sync::mpsc;
 use tokio_core::reactor::Core;
 
-#[cfg(target_os = "linux")]
 #[test]
 fn socket_timesout_when_remote_peer_does_not_respond_to_keep_alive_requests() {
     let mut evloop = Core::new().unwrap();

@@ -35,6 +35,7 @@ mod error;
 mod out_queue;
 mod tcp_sock;
 mod udp;
+#[cfg(target_os = "linux")]
 mod utils;
 
 #[cfg(feature = "enable-udt")]
@@ -56,6 +57,7 @@ pub struct SocketConfig {
     pub msg_drop_priority: u8,
     /// Maximum age of a message waiting to be sent. If a message is older, the queue is dropped.
     pub max_msg_age_secs: u64,
+    #[cfg(target_os = "linux")]
     /// All 3 configurable TCP keep alive parameters:
     ///
     /// 1. TCP_KEEPIDLE - wait for n inactivity seconds before start sending keep alive requests
@@ -73,6 +75,7 @@ impl Default for SocketConfig {
             max_payload_size: 2 * 1024 * 1024,
             msg_drop_priority: 2,
             max_msg_age_secs: 60,
+            #[cfg(target_os = "linux")]
             keep_alive: None,
         }
     }
