@@ -3,7 +3,10 @@ extern crate mio;
 extern crate socket_collection;
 #[macro_use]
 extern crate unwrap;
+#[macro_use]
+extern crate hamcrest2;
 
+use hamcrest2::prelude::*;
 use maidsafe_utilities::thread;
 use mio::*;
 use socket_collection::UdpSock;
@@ -94,7 +97,7 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
             // not lost). Assert that we have at-least got the majority of it though. Since it's
             // highly unlikely we would not receive a single event by the timeout, it probably
             // means there's none left now and we should break the event loop.
-            assert!(iterations > ITERATIONS / 2);
+            assert_that!(iterations, gt(ITERATIONS / 2));
             break;
         }
 
@@ -116,7 +119,7 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
                         } else {
                             udp1.read_frm::<Vec<u8>>().map(|opt| {
                                 opt.map(|(d, peer)| {
-                                    assert_eq!(peer, addr0);
+                                    assert_that!(peer, eq(addr0));
                                     d
                                 })
                             })
