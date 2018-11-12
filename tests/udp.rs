@@ -26,7 +26,7 @@ fn udp_peers_not_connected_huge_data_exchange() {
 
 fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
     const ITERATIONS: usize = 200;
-    const DATA_SIZE: usize = 10 * 1024;
+    const DATA_SIZE: usize = 9126; // max UDP datagram size on MacOS
     const UDP0: Token = Token(0);
     const UDP1: Token = Token(1);
 
