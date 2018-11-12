@@ -1,5 +1,6 @@
 extern crate maidsafe_utilities;
 extern crate mio;
+extern crate mio_extras;
 extern crate socket_collection;
 #[macro_use]
 extern crate unwrap;
@@ -9,6 +10,7 @@ extern crate hamcrest2;
 use hamcrest2::prelude::*;
 use maidsafe_utilities::thread;
 use mio::*;
+use mio_extras::timer::Timer;
 use socket_collection::UdpSock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -29,6 +31,7 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
     const DATA_SIZE: usize = 9126; // max UDP datagram size on MacOS
     const UDP0: Token = Token(0);
     const UDP1: Token = Token(1);
+    const TIMEOUT: Token = Token(2);
 
     let addr0 = unwrap!("127.0.0.1:0".parse());
     let addr1 = unwrap!("127.0.0.1:0".parse());
@@ -63,6 +66,10 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
         PollOpt::edge(),
     ));
 
+    let mut test_timeout = Timer::default();
+    let _ = test_timeout.set_timeout(Duration::from_secs(5), ());
+    unwrap!(poll.register(&test_timeout, TIMEOUT, Ready::readable(), PollOpt::edge(),));
+
     let (tx, rx) = mpsc::channel();
     let wouldblocked = Arc::new(AtomicBool::new(false));
     let wouldblocked_cloned = wouldblocked.clone();
@@ -90,17 +97,7 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
     let expected_data = vec![255; DATA_SIZE];
     let mut iterations = 0;
     'event_loop: loop {
-        let total_events = unwrap!(poll.poll(&mut events, Some(Duration::from_secs(3))));
-        if total_events == 0 {
-            assert!(events.is_empty());
-            // Since UDP is lossy, there is no guarantee that all sent data will received (i.e.,
-            // not lost). Assert that we have at-least got the majority of it though. Since it's
-            // highly unlikely we would not receive a single event by the timeout, it probably
-            // means there's none left now and we should break the event loop.
-            assert_that!(iterations, gt(ITERATIONS / 2));
-            break;
-        }
-
+        let _ = unwrap!(poll.poll(&mut events, None));
         for event in events.iter() {
             match event.token() {
                 UDP0 => if event.readiness().is_writable()
@@ -152,6 +149,10 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
                             Err(e) => panic!("UDP1 errored in Read: {:?}", e),
                         }
                     }
+                }
+                TIMEOUT => {
+                    assert_that!(iterations, gt(ITERATIONS / 2));
+                    break 'event_loop;
                 }
                 x => unreachable!("{:?}", x),
             }

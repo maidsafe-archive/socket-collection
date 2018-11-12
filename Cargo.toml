@@ -20,6 +20,7 @@ unwrap = "~1.2.1"
 
 [dev-dependencies]
 hamcrest2 = "~0.2.3"
+mio-extras = "~2.0.5"
 
 #[dependencies.libudt4-sys]
 #version = "~0.2.0"
