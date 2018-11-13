@@ -206,7 +206,7 @@ struct Inner {
     peer: Option<SocketAddr>,
     read_buffer: VecDeque<Vec<u8>>,
     read_buffer_2: VecDeque<(Vec<u8>, SocketAddr)>,
-    out_queue: OutQueue,
+    out_queue: OutQueue<Vec<u8>>,
     current_write: Option<Vec<u8>>,
     write_queue_2: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>, SocketAddr)>>,
     current_write_2: Option<(Vec<u8>, SocketAddr)>,

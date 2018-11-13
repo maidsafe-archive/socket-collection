@@ -12,13 +12,14 @@ use std::time::Instant;
 use {Priority, SocketConfig};
 
 /// Socket outgoing message queue with priorities and message expiration.
+/// `OutQueue` is generic and can hold arbitrary user data.
 #[derive(Default)]
-pub struct OutQueue {
-    inner: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+pub struct OutQueue<T> {
+    inner: BTreeMap<Priority, VecDeque<(Instant, T)>>,
     conf: SocketConfig,
 }
 
-impl OutQueue {
+impl<T> OutQueue<T> {
     /// Constructs empty write queue.
     pub fn new(conf: SocketConfig) -> Self {
         Self {
@@ -28,8 +29,8 @@ impl OutQueue {
     }
 
     /// Push buffer to the queue with the given priority.
-    pub fn push(&mut self, buf: Vec<u8>, priority: Priority) {
-        self.push_at(Instant::now(), buf, priority);
+    pub fn push(&mut self, msg: T, priority: Priority) {
+        self.push_at(Instant::now(), msg, priority);
     }
 
     /// Drop expired messages.
@@ -51,7 +52,7 @@ impl OutQueue {
     }
 
     /// Returns next outgoing message. Messages with lower priority number are first.
-    pub fn next_msg(&mut self) -> Option<Vec<u8>> {
+    pub fn next_msg(&mut self) -> Option<T> {
         let (key, (_time_stamp, data), empty) = match self.inner.iter_mut().next() {
             Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
             None => return None,
@@ -64,12 +65,12 @@ impl OutQueue {
 
     /// Helper method for testing that is able to push buffer to outgoing queue with a given
     /// timestamp. Helps testing expired messages.
-    fn push_at(&mut self, when: Instant, buf: Vec<u8>, priority: Priority) {
+    fn push_at(&mut self, when: Instant, msg: T, priority: Priority) {
         let entry = self
             .inner
             .entry(priority)
             .or_insert_with(|| VecDeque::with_capacity(10));
-        entry.push_back((when, buf));
+        entry.push_back((when, msg));
     }
 
     /// Returns a list of out queues with expired messages or no messages at all.
@@ -83,7 +84,7 @@ impl OutQueue {
 }
 
 /// Checks if given message queue should not be dropped.
-fn is_queue_valid(priority: u8, queue: &VecDeque<(Instant, Vec<u8>)>, conf: &SocketConfig) -> bool {
+fn is_queue_valid<T>(priority: u8, queue: &VecDeque<(Instant, T)>, conf: &SocketConfig) -> bool {
     priority < conf.msg_drop_priority || // Don't drop high-priority messages.
     queue.front().map_or(true, |&(ref timestamp, _)| {
         timestamp.elapsed().as_secs() <= conf.max_msg_age_secs
@@ -102,7 +103,7 @@ mod tests {
         fn it_returns_true_when_queue_priority_is_smaller_than_minimum_drop_priority() {
             let mut conf = SocketConfig::default();
             conf.msg_drop_priority = 2;
-            let queue = VecDeque::new();
+            let queue: VecDeque<(_, ())> = VecDeque::new();
 
             let retain = is_queue_valid(1, &queue, &conf);
 
@@ -117,7 +118,7 @@ mod tests {
             fn it_returns_true_when_queue_is_empty() {
                 let mut conf = SocketConfig::default();
                 conf.msg_drop_priority = 2;
-                let queue = VecDeque::new();
+                let queue: VecDeque<(_, ())> = VecDeque::new();
 
                 let retain = is_queue_valid(2, &queue, &conf);
 
@@ -260,7 +261,7 @@ mod tests {
 
         #[test]
         fn it_returns_none_if_no_data_is_queued() {
-            let mut out_queue = OutQueue::new(SocketConfig::default());
+            let mut out_queue: OutQueue<()> = OutQueue::new(SocketConfig::default());
 
             let next_msg = out_queue.next_msg();
 
