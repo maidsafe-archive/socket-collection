@@ -1,6 +1,7 @@
 use maidsafe_utilities::serialisation::{deserialise, serialise};
 use mio::net::UdpSocket;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
+use out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
@@ -205,7 +206,7 @@ struct Inner {
     peer: Option<SocketAddr>,
     read_buffer: VecDeque<Vec<u8>>,
     read_buffer_2: VecDeque<(Vec<u8>, SocketAddr)>,
-    write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+    out_queue: OutQueue,
     current_write: Option<Vec<u8>>,
     write_queue_2: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>, SocketAddr)>>,
     current_write_2: Option<(Vec<u8>, SocketAddr)>,
@@ -219,7 +220,7 @@ impl Inner {
             peer: None,
             read_buffer: Default::default(),
             read_buffer_2: Default::default(),
-            write_queue: Default::default(),
+            out_queue: OutQueue::new(conf.clone()),
             current_write: None,
             write_queue_2: Default::default(),
             current_write_2: None,
@@ -349,49 +350,20 @@ impl Inner {
     //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        let expired_keys: Vec<u8> = self
-            .write_queue
-            .iter()
-            .skip_while(|&(&priority, queue)| {
-                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
-                queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
-                })
-            }).map(|(&priority, _)| priority)
-            .collect();
-        let dropped_msgs: usize = expired_keys
-            .iter()
-            .filter_map(|priority| self.write_queue.remove(priority))
-            .map(|queue| queue.len())
-            .sum();
-        if dropped_msgs > 0 {
-            trace!(
-                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
-                dropped_msgs,
-                expired_keys[0]
-            );
-        }
-
+        let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
-            let entry = self
-                .write_queue
-                .entry(priority)
-                .or_insert_with(|| VecDeque::with_capacity(10));
-            entry.push_back((Instant::now(), serialise(&msg)?));
+            self.out_queue.push(serialise(&msg)?, priority);
         }
 
         loop {
-            let data = if let Some(data) = self.current_write.take() {
+            let data = if let Some(data) = self
+                .current_write
+                .take()
+                .or_else(|| self.out_queue.next_msg())
+            {
                 data
             } else {
-                let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
-                    Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                    None => return Ok(true),
-                };
-                if empty {
-                    let _ = self.write_queue.remove(&key);
-                }
-                data
+                return Ok(true);
             };
 
             match self.sock.send(&data) {
