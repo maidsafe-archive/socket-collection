@@ -351,7 +351,19 @@ impl Inner {
         if let Some((msg, priority)) = msg {
             self.out_queue.push(serialise(&msg)?, priority);
         }
+        self.flush_write_until_would_block()
+    }
 
+    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
+        let _ = self.out_queue2.drop_expired();
+        if let Some((msg, peer, priority)) = msg {
+            self.out_queue2.push((serialise(&msg)?, peer), priority);
+        }
+        self.flush_write_to_until_would_block()
+    }
+
+    /// Returns `Ok(false)`, if write to the underlying stream would block.
+    fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
         loop {
             let data = if let Some(data) = self
                 .current_write
@@ -363,36 +375,13 @@ impl Inner {
                 return Ok(true);
             };
 
-            match self.sock.send(&data) {
-                Ok(bytes_txd) => {
-                    if bytes_txd < data.len() {
-                        warn!(
-                            "Partial datagram sent. Will likely be interpreted as corrupted.
-                               Queued to be sent again."
-                        );
-                        self.current_write = Some(data);
-                    }
-                }
-                Err(error) => {
-                    if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.current_write = Some(data);
-                        return Ok(false);
-                    } else {
-                        return Err(From::from(error));
-                    }
-                }
-            }
+            let res = self.sock.send(&data);
+            handle_send_res(res, &mut self.current_write, data.len(), data)?;
         }
     }
 
-    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
-        let _ = self.out_queue2.drop_expired();
-        if let Some((msg, peer, priority)) = msg {
-            self.out_queue2.push((serialise(&msg)?, peer), priority);
-        }
-
+    /// Returns `Ok(false)`, if write to the underlying stream would block.
+    fn flush_write_to_until_would_block(&mut self) -> ::Res<bool> {
         loop {
             let (data, peer) = if let Some(data_peer) = self
                 .current_write_2
@@ -404,26 +393,36 @@ impl Inner {
                 return Ok(true);
             };
 
-            match self.sock.send_to(&data, &peer) {
-                Ok(bytes_txd) => {
-                    if bytes_txd < data.len() {
-                        warn!(
-                            "Partial datagram sent. Will likely be interpreted as corrupted.
-                               Queued to be sent again."
-                        );
-                        self.current_write_2 = Some((data, peer));
-                    }
-                }
-                Err(error) => {
-                    if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.current_write_2 = Some((data, peer));
-                        return Ok(false);
-                    } else {
-                        return Err(From::from(error));
-                    }
-                }
+            let res = self.sock.send_to(&data, &peer);
+            handle_send_res(res, &mut self.current_write_2, data.len(), (data, peer))?;
+        }
+    }
+}
+
+/// If failed to send a messages, requeue it.
+fn handle_send_res<M>(
+    send_res: io::Result<usize>,
+    current_write: &mut Option<M>,
+    msg_len: usize,
+    msg: M,
+) -> ::Res<bool> {
+    match send_res {
+        Ok(bytes_txd) => {
+            if bytes_txd < msg_len {
+                warn!(
+                    "Partial datagram sent. Will likely be interpreted as corrupted.
+                       Queued to be sent again."
+                );
+                *current_write = Some(msg);
+            }
+            Ok(true)
+        }
+        Err(error) => {
+            if error.kind() == ErrorKind::WouldBlock || error.kind() == ErrorKind::Interrupted {
+                *current_write = Some(msg);
+                Ok(false)
+            } else {
+                Err(From::from(error))
             }
         }
     }
@@ -452,5 +451,62 @@ impl Evented for Inner {
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
         self.sock.deregister(poll)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod handle_send_res {
+        use super::*;
+
+        #[test]
+        fn it_doesnt_alter_current_write_when_all_bytes_were_sent() {
+            let mut current_write = None;
+
+            let res = handle_send_res(Ok(100), &mut current_write, 100, vec![1; 100]);
+
+            assert_eq!(unwrap!(res), true);
+            assert_eq!(current_write, None);
+        }
+
+        #[test]
+        fn when_partial_message_was_sent_it_sets_current_write_to_data_to_be_sent_again() {
+            let mut current_write = None;
+
+            let res = handle_send_res(Ok(3), &mut current_write, 5, vec![1, 2, 3, 4, 5]);
+
+            assert_eq!(unwrap!(res), true);
+            assert_eq!(current_write, Some(vec![1, 2, 3, 4, 5]));
+        }
+
+        #[test]
+        fn when_result_is_error_would_block_it_returns_false() {
+            let mut current_write = None;
+
+            let res = handle_send_res(
+                Err(ErrorKind::WouldBlock.into()),
+                &mut current_write,
+                5,
+                vec![1, 2, 3, 4, 5],
+            );
+
+            assert_eq!(unwrap!(res), false);
+        }
+
+        #[test]
+        fn when_result_is_error_would_block_it_sets_current_write_to_data_to_be_sent_again() {
+            let mut current_write = None;
+
+            let _ = handle_send_res(
+                Err(ErrorKind::WouldBlock.into()),
+                &mut current_write,
+                5,
+                vec![1, 2, 3, 4, 5],
+            );
+
+            assert_eq!(current_write, Some(vec![1, 2, 3, 4, 5]));
+        }
     }
 }
