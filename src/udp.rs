@@ -233,110 +233,52 @@ impl Inner {
     //                     again in the next invocation of the `ready` handler.
     //   - Err(error):     there was an error reading from the socket.
     fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
-        if let Some(message) = self.read_from_buffer()? {
-            return Ok(Some(message));
+        if let Some(data) = self.read_buffer.pop_front() {
+            return Ok(Some(deserialise(&data)?));
         }
 
         // the mio reading window is max at 64k (64 * 1024)
         const BUF_LEN: usize = 64 * 1024;
         let mut buffer = [0; BUF_LEN];
-        let mut is_something_read = false;
+        let mut would_block = false;
 
-        loop {
-            match self.sock.recv(&mut buffer) {
-                Ok(bytes_rxd) => {
-                    if bytes_rxd == 0 {
-                        let e = Err(SocketError::ZeroByteRead);
-                        if is_something_read {
-                            return match self.read_from_buffer() {
-                                r @ Ok(Some(_)) | r @ Err(_) => r,
-                                Ok(None) => e,
-                            };
-                        } else {
-                            return e;
-                        }
-                    }
-                    self.read_buffer.push_back(buffer[..bytes_rxd].to_vec());
-                    is_something_read = true;
-                }
-                Err(error) => {
-                    return if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.read_from_buffer()
-                    } else {
-                        Err(From::from(error))
-                    }
-                }
+        while !would_block {
+            let res = self
+                .sock
+                .recv(&mut buffer)
+                .map(|bytes_read| buffer[..bytes_read].to_vec());
+            if let Some(buf) = handle_recv_res(res, &mut self.read_buffer, &mut would_block)? {
+                return Ok(Some(deserialise(&buf)?));
             }
         }
-    }
-
-    fn read_from_buffer<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
-        let data = match self.read_buffer.pop_front() {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
-        // deserialise_with_limit() which will require us to use `Bounded` which is a type in
-        // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
-        Ok(Some(deserialise(&data)?))
+        Ok(None)
     }
 
     fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
-        if let Some(pkg) = self.read_from_buffer_2()? {
-            return Ok(Some(pkg));
+        if let Some((data, peer)) = self.read_buffer_2.pop_front() {
+            // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
+            // deserialise_with_limit() which will require us to use `Bounded` which is a type in
+            // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
+            return Ok(Some((deserialise(&data)?, peer)));
         }
 
         // the mio reading window is max at 64k (64 * 1024)
         const BUF_LEN: usize = 64 * 1024;
         let mut buffer = [0; BUF_LEN];
-        let mut is_something_read = false;
+        let mut would_block = false;
 
-        loop {
-            match self.sock.recv_from(&mut buffer) {
-                Ok((bytes_rxd, peer)) => {
-                    if bytes_rxd == 0 {
-                        let e = Err(SocketError::ZeroByteRead);
-                        if is_something_read {
-                            return match self.read_from_buffer_2() {
-                                r @ Ok(Some(_)) | r @ Err(_) => r,
-                                Ok(None) => e,
-                            };
-                        } else {
-                            return e;
-                        }
-                    }
-                    self.read_buffer_2
-                        .push_back((buffer[..bytes_rxd].to_vec(), peer));
-                    is_something_read = true;
-                }
-                Err(error) => {
-                    return if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.read_from_buffer_2()
-                    } else {
-                        Err(From::from(error))
-                    }
-                }
+        while !would_block {
+            let res = self
+                .sock
+                .recv_from(&mut buffer)
+                .map(|(bytes_read, sender_addr)| (buffer[..bytes_read].to_vec(), sender_addr));
+            if let Some((buf, sender_addr)) =
+                handle_recv_res(res, &mut self.read_buffer_2, &mut would_block)?
+            {
+                return Ok(Some((deserialise(&buf)?, sender_addr)));
             }
         }
-    }
-
-    fn read_from_buffer_2<T: DeserializeOwned + Serialize>(
-        &mut self,
-    ) -> ::Res<Option<(T, SocketAddr)>> {
-        let (data, peer) = match self.read_buffer_2.pop_front() {
-            Some(pkg) => pkg,
-            None => return Ok(None),
-        };
-
-        // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
-        // deserialise_with_limit() which will require us to use `Bounded` which is a type in
-        // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
-        Ok(Some((deserialise(&data)?, peer)))
+        Ok(None)
     }
 
     // Write a message to the socket.
@@ -395,6 +337,57 @@ impl Inner {
 
             let res = self.sock.send_to(&data, &peer);
             handle_send_res(res, &mut self.current_write_2, data.len(), (data, peer))?;
+        }
+    }
+}
+
+/// Helper trait for `handle_recv_res()`.
+trait IsEmpty {
+    fn is_empty(&self) -> bool;
+}
+
+impl IsEmpty for Vec<u8> {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl IsEmpty for (Vec<u8>, SocketAddr) {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+fn handle_recv_res<T: IsEmpty>(
+    recv_res: io::Result<T>,
+    read_buffer: &mut VecDeque<T>,
+    would_block: &mut bool,
+) -> ::Res<Option<T>> {
+    match recv_res {
+        Ok(msg) => {
+            if msg.is_empty() {
+                let e = Err(SocketError::ZeroByteRead);
+                if !read_buffer.is_empty() {
+                    return match read_buffer.pop_front() {
+                        Some(msg) => Ok(Some(msg)),
+                        None => e,
+                    };
+                } else {
+                    return e;
+                }
+            }
+            read_buffer.push_back(msg);
+            Ok(None)
+        }
+        Err(error) => {
+            return if error.kind() == ErrorKind::WouldBlock
+                || error.kind() == ErrorKind::Interrupted
+            {
+                *would_block = true;
+                Ok(read_buffer.pop_front())
+            } else {
+                Err(From::from(error))
+            }
         }
     }
 }
@@ -507,6 +500,59 @@ mod tests {
             );
 
             assert_eq!(current_write, Some(vec![1, 2, 3, 4, 5]));
+        }
+    }
+
+    mod handle_recv_res {
+        use super::*;
+
+        mod when_result_is_error_would_block {
+            use super::*;
+
+            #[test]
+            fn it_sets_would_block_to_true() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+                let mut would_block = false;
+
+                let res = handle_recv_res(
+                    Err(ErrorKind::WouldBlock.into()),
+                    &mut read_buf,
+                    &mut would_block,
+                );
+
+                assert!(would_block);
+                assert_eq!(unwrap!(res), None);
+            }
+
+            #[test]
+            fn it_returns_last_buffered_item() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+                read_buf.push_front(vec![1, 2, 3]);
+                let mut would_block = false;
+
+                let next_msg = handle_recv_res(
+                    Err(ErrorKind::WouldBlock.into()),
+                    &mut read_buf,
+                    &mut would_block,
+                );
+
+                assert_eq!(unwrap!(next_msg), Some(vec![1, 2, 3]));
+            }
+        }
+
+        mod when_result_is_received_buffer {
+            use super::*;
+
+            #[test]
+            fn it_pushes_buffer_to_the_read_queue() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+                let mut would_block = false;
+
+                let next_msg = handle_recv_res(Ok(vec![1, 2, 3]), &mut read_buf, &mut would_block);
+
+                assert_eq!(unwrap!(next_msg), None);
+                assert_eq!(read_buf[0], vec![1, 2, 3]);
+            }
         }
     }
 }
