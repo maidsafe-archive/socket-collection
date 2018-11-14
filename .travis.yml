@@ -27,7 +27,7 @@ script:
     cargo test --verbose --release
   - if [ "${TRAVIS_OS_NAME}" = linux ]; then
       cargo clippy --verbose --release &&
-      cargo clippy --verbose --release --profile=test
+      cargo clippy --verbose --release --profile=test ;
     fi
 before_cache:
   - cargo prune
