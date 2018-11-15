@@ -76,7 +76,7 @@ impl OutQueue {
     fn expired_queues(&self) -> Vec<u8> {
         self.inner
             .iter()
-            .filter(|&(&priority, queue)| !is_queue_valid(priority, queue, &self.conf))
+            .skip_while(|&(&priority, queue)| is_queue_valid(priority, queue, &self.conf))
             .map(|(&priority, _)| priority)
             .collect()
     }
@@ -202,7 +202,9 @@ mod tests {
 
             let expired = out_queue.expired_queues();
 
-            assert_eq!(expired, vec![1, 4]);
+            // NOTE(povilas): this is unexpected behavior to me. I expected it to return [1, 4].
+            // Such behavior is required by Routing and might be changed in the future.
+            assert_eq!(expired, vec![1, 2, 3, 4]);
         }
     }
 
