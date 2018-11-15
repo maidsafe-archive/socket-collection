@@ -44,6 +44,13 @@ mod udp;
 /// bandwidth is insufficient.
 pub type Priority = u8;
 
+/// Don't allow packets bigger than this value.
+pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 2 * 1024 * 1024;
+/// Minimum priority for droppable messages. Messages with lower values will never be dropped.
+pub const DEFAULT_MSG_DROP_PRIORITY: u8 = 2;
+/// Maximum age of a message waiting to be sent. If a message is older, the queue is dropped.
+pub const DEFAULT_MAX_MSG_AGE_SECS: u64 = 60;
+
 /// Configures socket behavior.
 #[derive(Debug, Clone)]
 pub struct SocketConfig {
@@ -59,9 +66,9 @@ pub struct SocketConfig {
 impl Default for SocketConfig {
     fn default() -> Self {
         Self {
-            max_payload_size: 2 * 1024 * 1024,
-            msg_drop_priority: 2,
-            max_msg_age_secs: 60,
+            max_payload_size: DEFAULT_MAX_PAYLOAD_SIZE,
+            msg_drop_priority: DEFAULT_MSG_DROP_PRIORITY,
+            max_msg_age_secs: DEFAULT_MAX_MSG_AGE_SECS,
         }
     }
 }

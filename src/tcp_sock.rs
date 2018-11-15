@@ -18,6 +18,12 @@ pub struct TcpSock {
 }
 
 impl TcpSock {
+    /// Starts TCP connection. Returns immediately, so make sure to wait until the socket becomes
+    /// writable.
+    pub fn connect(addr: &SocketAddr) -> ::Res<Self> {
+        Self::connect_with_conf(addr, Default::default())
+    }
+
     /// Starts TCP connection and uses given socket configuration. Returns immediately, so make
     /// sure to wait until the socket becomes writable.
     pub fn connect_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
@@ -25,22 +31,18 @@ impl TcpSock {
         Ok(Self::wrap_with_conf(stream, conf))
     }
 
-    /// Starts TCP connection. Returns immediately, so make sure to wait until the socket becomes
-    /// writable.
-    pub fn connect(addr: &SocketAddr) -> ::Res<Self> {
-        Self::connect_with_conf(addr, SocketConfig::default())
+    /// Wraps `TcpStream` and uses default socket configuration.
+    pub fn wrap(stream: TcpStream) -> Self {
+        Self {
+            inner: Some(Inner::new(stream)),
+        }
     }
 
     /// Wraps `TcpStream` and uses given socket configuration.
     pub fn wrap_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
-        TcpSock {
-            inner: Some(Inner::new(stream, conf)),
+        Self {
+            inner: Some(Inner::new_with_conf(stream, conf)),
         }
-    }
-
-    /// Wraps `TcpStream` and uses default socket configuration.
-    pub fn wrap(stream: TcpStream) -> Self {
-        Self::wrap_with_conf(stream, SocketConfig::default())
     }
 
     pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
@@ -171,7 +173,11 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(stream: TcpStream, conf: SocketConfig) -> Self {
+    fn new(stream: TcpStream) -> Self {
+        Self::new_with_conf(stream, Default::default())
+    }
+
+    fn new_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
         Self {
             stream,
             msg_reader: LenDelimitedReader::new(conf.max_payload_size),

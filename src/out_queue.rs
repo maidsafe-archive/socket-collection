@@ -12,6 +12,7 @@ use std::time::Instant;
 use {Priority, SocketConfig};
 
 /// Socket outgoing message queue with priorities and message expiration.
+#[derive(Default)]
 pub struct OutQueue {
     inner: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
     conf: SocketConfig,
@@ -21,7 +22,7 @@ impl OutQueue {
     /// Constructs empty write queue.
     pub fn new(conf: SocketConfig) -> Self {
         Self {
-            inner: BTreeMap::new(),
+            inner: Default::default(),
             conf,
         }
     }

@@ -24,7 +24,7 @@ impl UdpSock {
 
     /// Wrap `UdpSocket` and use default socket configuration.
     pub fn wrap(sock: UdpSocket) -> Self {
-        Self::wrap_with_conf(sock, SocketConfig::default())
+        Self::wrap_with_conf(sock, Default::default())
     }
 
     /// Create new `UdpSock` bound to the given address with given configuration.
@@ -34,7 +34,7 @@ impl UdpSock {
 
     /// Create new `UdpSock` bound to the given address with default configuration.
     pub fn bind(addr: &SocketAddr) -> ::Res<Self> {
-        Self::bind_with_conf(addr, SocketConfig::default())
+        Self::bind_with_conf(addr, Default::default())
     }
 
     pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
