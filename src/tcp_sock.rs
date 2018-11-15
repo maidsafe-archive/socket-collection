@@ -385,7 +385,7 @@ impl LenDelimitedReader {
         }
 
         self.read_buffer = self.read_buffer[u32_size..].to_owned();
-        Ok(true)
+        Ok(self.read_len > 0)
     }
 
     /// Reset read buffer to the beginning of the next message.
@@ -403,13 +403,61 @@ mod tests {
     mod serialize_with_len {
         use super::*;
 
-        #[test]
-        fn it_writes_4_byte_data_length() {
-            let buf = unwrap!(serialize_with_len(vec![1u8, 2, 3]));
+        proptest! {
+            #[test]
+            fn it_writes_4_byte_data_length(data_len in (0..65000)) {
+                let data_len = data_len as usize;
+                let exp_serialised = unwrap!(serialise(&vec![1u8; data_len]));
 
-            let exp_serialised = unwrap!(serialise(&vec![1u8, 2, 3]));
+                let buf = unwrap!(serialize_with_len(vec![1u8; data_len]));
 
-            assert_eq!(usize::from(buf[0]), exp_serialised.len());
+                let len = unwrap!(Cursor::new(buf[0..4].to_vec()).read_u32::<LittleEndian>()) as usize;
+                assert_eq!(len, exp_serialised.len());
+            }
+        }
+    }
+
+    mod len_delimited_reader {
+        use super::*;
+
+        mod try_read {
+            use super::*;
+
+            #[test]
+            fn it_deserializes_data_from_bytes() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                let buf = unwrap!(serialize_with_len(vec![1, 2, 3]));
+                reader.put_buf(&buf);
+
+                let data = unwrap!(reader.try_read());
+
+                assert_eq!(data, Some(vec![1, 2, 3]));
+            }
+
+            #[test]
+            fn when_data_len_is_0_it_returns_none() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                reader.put_buf(&[0, 0, 0, 0]);
+
+                let data: Option<Vec<u8>> = unwrap!(reader.try_read());
+
+                assert_eq!(data, None);
+            }
+        }
+
+        mod try_read_header {
+            use super::*;
+
+            #[test]
+            fn when_data_len_is_0_it_returns_false() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                reader.put_buf(&[0, 0, 0, 0]);
+
+                let res = unwrap!(reader.try_read_header());
+
+                assert_eq!(res, false);
+                assert_eq!(reader.read_len, 0);
+            }
         }
     }
 }

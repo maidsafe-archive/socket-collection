@@ -12,7 +12,9 @@ extern crate log;
 extern crate quick_error;
 #[macro_use]
 extern crate unwrap;
-
+#[cfg(test)]
+#[macro_use]
+extern crate proptest;
 extern crate byteorder;
 extern crate maidsafe_utilities;
 extern crate mio;
