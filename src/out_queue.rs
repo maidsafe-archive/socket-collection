@@ -72,7 +72,7 @@ impl OutQueue {
         entry.push_back((when, buf));
     }
 
-    /// Returns a list of out_queue with expired messages.
+    /// Returns a list of out queues with expired messages or no messages at all.
     fn expired_queues(&self) -> Vec<u8> {
         self.inner
             .iter()
@@ -85,7 +85,7 @@ impl OutQueue {
 /// Checks if given message queue should not be dropped.
 fn is_queue_valid(priority: u8, queue: &VecDeque<(Instant, Vec<u8>)>, conf: &SocketConfig) -> bool {
     priority < conf.msg_drop_priority || // Don't drop high-priority messages.
-    queue.front().map_or(true, |&(ref timestamp, _)| {
+    queue.front().map_or(false, |&(ref timestamp, _)| {
         timestamp.elapsed().as_secs() <= conf.max_msg_age_secs
     })
 }
@@ -114,14 +114,14 @@ mod tests {
             use std::ops::Sub;
 
             #[test]
-            fn it_returns_true_when_queue_is_empty() {
+            fn it_returns_false_when_queue_is_empty() {
                 let mut conf = SocketConfig::default();
                 conf.msg_drop_priority = 2;
                 let queue = VecDeque::new();
 
                 let retain = is_queue_valid(2, &queue, &conf);
 
-                assert!(retain);
+                assert!(!retain);
             }
 
             #[test]
@@ -294,7 +294,9 @@ mod tests {
 
         #[test]
         fn it_removes_queue_if_it_had_only_1_element() {
-            let mut out_queue = OutQueue::new(SocketConfig::default());
+            let mut conf = SocketConfig::default();
+            conf.msg_drop_priority = 1;
+            let mut out_queue = OutQueue::new(conf);
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
             out_queue.push_at(queued_at, vec![1, 2, 3], 1);
