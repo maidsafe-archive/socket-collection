@@ -2,36 +2,46 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
 use mio::tcp::TcpStream;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
+use out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
-use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
-use std::time::Instant;
-use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
+use {Priority, SocketConfig, SocketError};
 
+/// TCP socket which by default is uninitialized.
 pub struct TcpSock {
     inner: Option<Inner>,
 }
 
 impl TcpSock {
+    /// Starts TCP connection. Returns immediately, so make sure to wait until the socket becomes
+    /// writable.
     pub fn connect(addr: &SocketAddr) -> ::Res<Self> {
-        let stream = TcpStream::connect(addr)?;
-        Ok(Self::wrap(stream))
+        Self::connect_with_conf(addr, Default::default())
     }
 
+    /// Starts TCP connection and uses given socket configuration. Returns immediately, so make
+    /// sure to wait until the socket becomes writable.
+    pub fn connect_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
+        let stream = TcpStream::connect(addr)?;
+        Ok(Self::wrap_with_conf(stream, conf))
+    }
+
+    /// Wraps `TcpStream` and uses default socket configuration.
     pub fn wrap(stream: TcpStream) -> Self {
-        TcpSock {
-            inner: Some(Inner {
-                stream,
-                read_buffer: Vec::new(),
-                read_len: 0,
-                write_queue: BTreeMap::new(),
-                current_write: None,
-            }),
+        Self {
+            inner: Some(Inner::new(stream)),
+        }
+    }
+
+    /// Wraps `TcpStream` and uses given socket configuration.
+    pub fn wrap_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
+        Self {
+            inner: Some(Inner::new_with_conf(stream, conf)),
         }
     }
 
@@ -157,13 +167,25 @@ impl Evented for TcpSock {
 
 struct Inner {
     stream: TcpStream,
-    read_buffer: Vec<u8>,
-    read_len: usize,
-    write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+    msg_reader: LenDelimitedReader,
+    out_queue: OutQueue,
     current_write: Option<Vec<u8>>,
 }
 
 impl Inner {
+    fn new(stream: TcpStream) -> Self {
+        Self::new_with_conf(stream, Default::default())
+    }
+
+    fn new_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
+        Self {
+            stream,
+            msg_reader: LenDelimitedReader::new(conf.max_payload_size),
+            out_queue: OutQueue::new(conf),
+            current_write: None,
+        }
+    }
+
     // Read message from the socket. Call this from inside the `ready` handler.
     //
     // Returns:
@@ -172,7 +194,7 @@ impl Inner {
     //                     again in the next invocation of the `ready` handler.
     //   - Err(error):     there was an error reading from the socket.
     fn read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
-        if let Some(message) = self.read_from_buffer()? {
+        if let Some(message) = self.msg_reader.try_read()? {
             return Ok(Some(message));
         }
 
@@ -186,7 +208,7 @@ impl Inner {
                     if bytes_rxd == 0 {
                         let e = Err(SocketError::ZeroByteRead);
                         if is_something_read {
-                            return match self.read_from_buffer() {
+                            return match self.msg_reader.try_read() {
                                 r @ Ok(Some(_)) | r @ Err(_) => r,
                                 Ok(None) => e,
                             };
@@ -194,7 +216,7 @@ impl Inner {
                             return e;
                         }
                     }
-                    self.read_buffer.extend_from_slice(&buffer[0..bytes_rxd]);
+                    self.msg_reader.put_buf(&buffer[..bytes_rxd]);
                     is_something_read = true;
                 }
                 Err(error) => {
@@ -202,7 +224,7 @@ impl Inner {
                         || error.kind() == ErrorKind::Interrupted
                     {
                         if is_something_read {
-                            self.read_from_buffer()
+                            self.msg_reader.try_read()
                         } else {
                             Ok(None)
                         }
@@ -214,35 +236,6 @@ impl Inner {
         }
     }
 
-    fn read_from_buffer<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
-        let u32_size = mem::size_of::<u32>();
-
-        if self.read_len == 0 {
-            if self.read_buffer.len() < u32_size {
-                return Ok(None);
-            }
-
-            self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
-
-            if self.read_len > MAX_PAYLOAD_SIZE {
-                return Err(SocketError::PayloadSizeProhibitive);
-            }
-
-            self.read_buffer = self.read_buffer[u32_size..].to_owned();
-        }
-
-        if self.read_len > self.read_buffer.len() {
-            return Ok(None);
-        }
-
-        let result = deserialise_from(&mut Cursor::new(&self.read_buffer))?;
-
-        self.read_buffer = self.read_buffer[self.read_len..].to_owned();
-        self.read_len = 0;
-
-        Ok(Some(result))
-    }
-
     // Write a message to the socket.
     //
     // Returns:
@@ -251,59 +244,24 @@ impl Inner {
     //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        let expired_keys: Vec<u8> = self
-            .write_queue
-            .iter()
-            .skip_while(|&(&priority, queue)| {
-                priority < MSG_DROP_PRIORITY || // Don't drop high-priority messages.
-                queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= MAX_MSG_AGE_SECS
-                })
-            }).map(|(&priority, _)| priority)
-            .collect();
-        let dropped_msgs: usize = expired_keys
-            .iter()
-            .filter_map(|priority| self.write_queue.remove(priority))
-            .map(|queue| queue.len())
-            .sum();
-        if dropped_msgs > 0 {
-            trace!(
-                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
-                dropped_msgs,
-                expired_keys[0]
-            );
-        }
-
+        let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
-            let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
-
-            let _ = data.write_u32::<LittleEndian>(0);
-
-            serialise_into(&msg, &mut data)?;
-
-            let len = data.position() - mem::size_of::<u32>() as u64;
-            data.set_position(0);
-            data.write_u32::<LittleEndian>(len as u32)?;
-
-            let entry = self
-                .write_queue
-                .entry(priority)
-                .or_insert_with(|| VecDeque::with_capacity(10));
-            entry.push_back((Instant::now(), data.into_inner()));
+            self.enqueue_data(priority, msg)?;
         }
+        self.flush_write_until_would_block()
+    }
 
+    /// Returns `Ok(false)`, if write to the underlying stream would block.
+    fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
         loop {
-            let data = if let Some(data) = self.current_write.take() {
+            let data = if let Some(data) = self
+                .current_write
+                .take()
+                .or_else(|| self.out_queue.next_msg())
+            {
                 data
             } else {
-                let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
-                    Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                    None => return Ok(true),
-                };
-                if empty {
-                    let _ = self.write_queue.remove(&key);
-                }
-                data
+                return Ok(true);
             };
 
             match self.stream.write(&data) {
@@ -324,6 +282,12 @@ impl Inner {
                 }
             }
         }
+    }
+
+    fn enqueue_data<T: Serialize>(&mut self, priority: Priority, msg: T) -> ::Res<()> {
+        let buf = serialize_with_len(msg)?;
+        self.out_queue.push(buf, priority);
+        Ok(())
     }
 }
 
@@ -356,5 +320,144 @@ impl Evented for Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+/// Serialize given value and write to a buffer with 4 byte length header.
+fn serialize_with_len<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
+    let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
+
+    let _ = data.write_u32::<LittleEndian>(0);
+    serialise_into(&value, &mut data)?;
+    let len = data.position() - mem::size_of::<u32>() as u64;
+    data.set_position(0);
+    data.write_u32::<LittleEndian>(len as u32)?;
+
+    Ok(data.into_inner())
+}
+
+/// Reads length delimited data frames.
+struct LenDelimitedReader {
+    read_buffer: Vec<u8>,
+    read_len: usize,
+    max_payload_size: usize,
+}
+
+impl LenDelimitedReader {
+    /// Construct reader with empty read buffer.
+    fn new(max_payload_size: usize) -> Self {
+        Self {
+            read_buffer: Vec::new(),
+            read_len: 0,
+            max_payload_size,
+        }
+    }
+
+    /// Puts data buffer into the reader so that later when enough data is put it could be read and
+    /// deserialised.
+    fn put_buf(&mut self, buf: &[u8]) {
+        self.read_buffer.extend_from_slice(buf);
+    }
+
+    fn try_read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+        if self.read_len == 0 && !self.try_read_header()? {
+            return Ok(None);
+        }
+        if self.read_len > self.read_buffer.len() {
+            return Ok(None);
+        }
+
+        let result = deserialise_from(&mut Cursor::new(&self.read_buffer))?;
+        self.mark_read();
+        Ok(Some(result))
+    }
+
+    fn try_read_header(&mut self) -> ::Res<bool> {
+        let u32_size = mem::size_of::<u32>();
+        if self.read_buffer.len() < u32_size {
+            return Ok(false);
+        }
+
+        self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
+
+        if self.read_len > self.max_payload_size {
+            return Err(SocketError::PayloadSizeProhibitive);
+        }
+
+        self.read_buffer = self.read_buffer[u32_size..].to_owned();
+        Ok(self.read_len > 0)
+    }
+
+    /// Reset read buffer to the beginning of the next message.
+    fn mark_read(&mut self) {
+        self.read_buffer = self.read_buffer[self.read_len..].to_owned();
+        self.read_len = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maidsafe_utilities::serialisation::serialise;
+
+    mod serialize_with_len {
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn it_writes_4_byte_data_length(data_len in (0..65000)) {
+                let data_len = data_len as usize;
+                let exp_serialised = unwrap!(serialise(&vec![1u8; data_len]));
+
+                let buf = unwrap!(serialize_with_len(vec![1u8; data_len]));
+
+                let len = unwrap!(Cursor::new(buf[0..4].to_vec()).read_u32::<LittleEndian>()) as usize;
+                assert_eq!(len, exp_serialised.len());
+            }
+        }
+    }
+
+    mod len_delimited_reader {
+        use super::*;
+
+        mod try_read {
+            use super::*;
+
+            #[test]
+            fn it_deserializes_data_from_bytes() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                let buf = unwrap!(serialize_with_len(vec![1, 2, 3]));
+                reader.put_buf(&buf);
+
+                let data = unwrap!(reader.try_read());
+
+                assert_eq!(data, Some(vec![1, 2, 3]));
+            }
+
+            #[test]
+            fn when_data_len_is_0_it_returns_none() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                reader.put_buf(&[0, 0, 0, 0]);
+
+                let data: Option<Vec<u8>> = unwrap!(reader.try_read());
+
+                assert_eq!(data, None);
+            }
+        }
+
+        mod try_read_header {
+            use super::*;
+
+            #[test]
+            fn when_data_len_is_0_it_returns_false() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                reader.put_buf(&[0, 0, 0, 0]);
+
+                let res = unwrap!(reader.try_read_header());
+
+                assert_eq!(res, false);
+                assert_eq!(reader.read_len, 0);
+            }
+        }
     }
 }

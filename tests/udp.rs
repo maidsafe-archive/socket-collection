@@ -76,7 +76,7 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
 
     let _j = thread::named("UDP0 sender", move || {
         let data = vec![255u8; DATA_SIZE];
-        for _ in 0..ITERATIONS {
+        for _i in 0..ITERATIONS {
             match if should_connect {
                 udp0.write(Some((data.clone(), 0)))
             } else {
@@ -89,6 +89,15 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
                     wouldblocked.store(false, Ordering::SeqCst);
                 }
                 Err(e) => panic!("UDP0 Error in send: {:?}", e),
+            }
+
+            // On MacOS kernel is not able to process packets as fast as they are produced on
+            // localhost. That results in packet loss, hence we pace the sent packets.
+            #[cfg(target_os = "macos")]
+            {
+                if _i % 50 == 0 {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         }
     });

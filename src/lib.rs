@@ -12,7 +12,9 @@ extern crate log;
 extern crate quick_error;
 #[macro_use]
 extern crate unwrap;
-
+#[cfg(test)]
+#[macro_use]
+extern crate proptest;
 extern crate byteorder;
 extern crate maidsafe_utilities;
 extern crate mio;
@@ -31,6 +33,7 @@ pub use udp::UdpSock;
 // pub use udt::{EpollLoop, Handle, Notifier, UdtSock};
 
 mod error;
+mod out_queue;
 mod tcp_sock;
 mod udp;
 
@@ -43,10 +46,34 @@ mod udp;
 /// bandwidth is insufficient.
 pub type Priority = u8;
 
-pub const MAX_PAYLOAD_SIZE: usize = 2 * 1024 * 1024;
+/// Don't allow packets bigger than this value.
+pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 2 * 1024 * 1024;
 /// Minimum priority for droppable messages. Messages with lower values will never be dropped.
-pub const MSG_DROP_PRIORITY: u8 = 2;
+pub const DEFAULT_MSG_DROP_PRIORITY: u8 = 2;
 /// Maximum age of a message waiting to be sent. If a message is older, the queue is dropped.
-pub const MAX_MSG_AGE_SECS: u64 = 60;
+pub const DEFAULT_MAX_MSG_AGE_SECS: u64 = 60;
+
+/// Configures socket behavior.
+#[derive(Debug, Clone)]
+pub struct SocketConfig {
+    /// Maximum data size that the socket will send.
+    /// Nonaplicable for UDP socket whose max message size is determined by max UDP payload size.
+    pub max_payload_size: usize,
+    /// Minimum priority for droppable messages. Messages with lower values will never be dropped.
+    pub msg_drop_priority: u8,
+    /// Maximum age of a message waiting to be sent. If a message is older, the queue is dropped.
+    pub max_msg_age_secs: u64,
+}
+
+impl Default for SocketConfig {
+    fn default() -> Self {
+        Self {
+            max_payload_size: DEFAULT_MAX_PAYLOAD_SIZE,
+            msg_drop_priority: DEFAULT_MSG_DROP_PRIORITY,
+            max_msg_age_secs: DEFAULT_MAX_MSG_AGE_SECS,
+        }
+    }
+}
+
 /// `Result` type specialised for this crate
 pub type Res<T> = Result<T, SocketError>;
