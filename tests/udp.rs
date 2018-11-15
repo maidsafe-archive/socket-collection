@@ -91,6 +91,8 @@ fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
                 Err(e) => panic!("UDP0 Error in send: {:?}", e),
             }
 
+            // On MacOS kernel is not able to process packets as fast as they are produced on
+            // localhost. That results in packet loss, hence we pace the sent packets.
             #[cfg(target_os = "macos")]
             {
                 if _i % 50 == 0 {

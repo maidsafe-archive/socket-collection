@@ -246,7 +246,7 @@ impl Inner {
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
-            self.enqueue_data(msg, priority)?;
+            self.enqueue_data(priority, msg)?;
         }
         self.flush_write_until_would_block()
     }
@@ -284,8 +284,8 @@ impl Inner {
         }
     }
 
-    fn enqueue_data<T: Serialize>(&mut self, msg: T, priority: Priority) -> ::Res<()> {
-        let buf = write_len_delimited(msg)?;
+    fn enqueue_data<T: Serialize>(&mut self, priority: Priority, msg: T) -> ::Res<()> {
+        let buf = serialize_with_len(msg)?;
         self.out_queue.push(buf, priority);
         Ok(())
     }
@@ -324,7 +324,7 @@ impl Drop for Inner {
 }
 
 /// Serialize given value and write to a buffer with 4 byte length header.
-fn write_len_delimited<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
+fn serialize_with_len<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
     let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
 
     let _ = data.write_u32::<LittleEndian>(0);
@@ -388,7 +388,7 @@ impl LenDelimitedReader {
         Ok(true)
     }
 
-    /// Shift read buffer and reset buffer to read length.
+    /// Reset read buffer to the beginning of the next message.
     fn mark_read(&mut self) {
         self.read_buffer = self.read_buffer[self.read_len..].to_owned();
         self.read_len = 0;
@@ -400,12 +400,12 @@ mod tests {
     use super::*;
     use maidsafe_utilities::serialisation::serialise;
 
-    mod write_len_delimited {
+    mod serialize_with_len {
         use super::*;
 
         #[test]
         fn it_writes_4_byte_data_length() {
-            let buf = unwrap!(write_len_delimited(vec![1u8, 2, 3]));
+            let buf = unwrap!(serialize_with_len(vec![1u8, 2, 3]));
 
             let exp_serialised = unwrap!(serialise(&vec![1u8, 2, 3]));
 

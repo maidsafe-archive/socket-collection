@@ -29,7 +29,7 @@ impl OutQueue {
 
     /// Push buffer to the queue with the given priority.
     pub fn push(&mut self, buf: Vec<u8>, priority: Priority) {
-        self.push_at(buf, priority, Instant::now());
+        self.push_at(Instant::now(), buf, priority);
     }
 
     /// Drop expired messages.
@@ -64,7 +64,7 @@ impl OutQueue {
 
     /// Helper method for testing that is able to push buffer to outgoing queue with a given
     /// timestamp. Helps testing expired messages.
-    fn push_at(&mut self, buf: Vec<u8>, priority: Priority, when: Instant) {
+    fn push_at(&mut self, when: Instant, buf: Vec<u8>, priority: Priority) {
         let entry = self
             .inner
             .entry(priority)
@@ -167,13 +167,13 @@ mod tests {
             let mut out_queue = OutQueue::new(conf);
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 1);
 
             let queued_at = Instant::now().sub(Duration::from_secs(100));
-            out_queue.push_at(vec![1, 2, 3], 2, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 2);
 
             let queued_at = Instant::now().sub(Duration::from_secs(200));
-            out_queue.push_at(vec![1, 2, 3], 3, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 3);
 
             let expired = out_queue.expired_queues();
 
@@ -189,16 +189,16 @@ mod tests {
             let mut out_queue = OutQueue::new(conf);
 
             let queued_at = Instant::now().sub(Duration::from_secs(100));
-            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 1);
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 2, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 2);
 
             let queued_at = Instant::now().sub(Duration::from_secs(6));
-            out_queue.push_at(vec![1, 2, 3], 3, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 3);
 
             let queued_at = Instant::now().sub(Duration::from_secs(200));
-            out_queue.push_at(vec![1, 2, 3], 4, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 4);
 
             let expired = out_queue.expired_queues();
 
@@ -218,13 +218,13 @@ mod tests {
             let mut out_queue = OutQueue::new(conf);
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 1);
 
             let queued_at = Instant::now().sub(Duration::from_secs(100));
-            out_queue.push_at(vec![4, 5, 6], 2, queued_at);
+            out_queue.push_at(queued_at, vec![4, 5, 6], 2);
 
             let queued_at = Instant::now().sub(Duration::from_secs(200));
-            out_queue.push_at(vec![7, 8, 9], 3, queued_at);
+            out_queue.push_at(queued_at, vec![7, 8, 9], 3);
 
             let dropped = out_queue.drop_expired();
 
@@ -240,10 +240,10 @@ mod tests {
             let mut out_queue = OutQueue::new(conf);
 
             let queued_at = Instant::now().sub(Duration::from_secs(100));
-            out_queue.push_at(vec![1, 2, 3], 2, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 2);
 
             let queued_at = Instant::now().sub(Duration::from_secs(200));
-            out_queue.push_at(vec![3, 4, 5], 1, queued_at);
+            out_queue.push_at(queued_at, vec![3, 4, 5], 1);
 
             let dropped = out_queue.drop_expired();
 
@@ -270,7 +270,7 @@ mod tests {
             let mut out_queue = OutQueue::new(SocketConfig::default());
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 1);
 
             let next_msg = out_queue.next_msg();
 
@@ -282,10 +282,10 @@ mod tests {
             let mut out_queue = OutQueue::new(SocketConfig::default());
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 2, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 2);
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 1);
 
             let next_msg = out_queue.next_msg();
 
@@ -297,7 +297,7 @@ mod tests {
             let mut out_queue = OutQueue::new(SocketConfig::default());
 
             let queued_at = Instant::now().sub(Duration::from_secs(5));
-            out_queue.push_at(vec![1, 2, 3], 1, queued_at);
+            out_queue.push_at(queued_at, vec![1, 2, 3], 1);
 
             let _ = out_queue.next_msg();
 

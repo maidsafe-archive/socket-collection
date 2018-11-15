@@ -21,7 +21,7 @@ unwrap = "~1.2.1"
 [dev-dependencies]
 hamcrest2 = "~0.2.3"
 mio-extras = "~2.0.5"
-net-literals = "~0.1.2"
+proptest = "~0.8.7"
 rand = "~0.5.5"
 
 #[dependencies.libudt4-sys]
