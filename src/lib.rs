@@ -18,6 +18,7 @@ extern crate proptest;
 extern crate byteorder;
 extern crate maidsafe_utilities;
 extern crate mio;
+extern crate safe_crypto;
 extern crate serde;
 
 // #[cfg(feature = "enable-udt")]
@@ -32,6 +33,7 @@ pub use udp::UdpSock;
 // #[cfg(feature = "enable-udt")]
 // pub use udt::{EpollLoop, Handle, Notifier, UdtSock};
 
+mod crypto;
 mod error;
 mod out_queue;
 mod tcp_sock;

@@ -1,4 +1,5 @@
 use maidsafe_utilities::serialisation::SerialisationError;
+use safe_crypto;
 use std::io;
 
 // #[cfg(feature = "enable-udt")]
@@ -65,6 +66,11 @@ quick_error! {
         UdtNegativeBytesWrite(val: i32) {
             description("UDT Write has resulted in a negative result. This is an error value.")
             display("UDT Write has resulted in a negative result. This is an error value: {}", val)
+        }
+        /// Crypto related error.
+        Crypto(e: safe_crypto::Error) {
+            display("Crypto related error: {}", e)
+            from()
         }
     }
 }
