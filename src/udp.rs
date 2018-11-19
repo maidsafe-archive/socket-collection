@@ -240,18 +240,19 @@ impl Inner {
         // the mio reading window is max at 64k (64 * 1024)
         const BUF_LEN: usize = 64 * 1024;
         let mut buffer = [0; BUF_LEN];
-        let mut would_block = false;
 
-        while !would_block {
+        loop {
             let res = self
                 .sock
                 .recv(&mut buffer)
                 .map(|bytes_read| buffer[..bytes_read].to_vec());
-            if let Some(buf) = handle_recv_res(res, &mut self.read_buffer, &mut would_block)? {
-                return Ok(Some(deserialise(&buf)?));
+            if let RecvResult::WouldBlock(data) = handle_recv_res(res, &mut self.read_buffer)? {
+                return match data {
+                    Some(buf) => Ok(Some(deserialise(&buf)?)),
+                    None => Ok(None),
+                };
             }
         }
-        Ok(None)
     }
 
     fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
@@ -265,20 +266,19 @@ impl Inner {
         // the mio reading window is max at 64k (64 * 1024)
         const BUF_LEN: usize = 64 * 1024;
         let mut buffer = [0; BUF_LEN];
-        let mut would_block = false;
 
-        while !would_block {
+        loop {
             let res = self
                 .sock
                 .recv_from(&mut buffer)
                 .map(|(bytes_read, sender_addr)| (buffer[..bytes_read].to_vec(), sender_addr));
-            if let Some((buf, sender_addr)) =
-                handle_recv_res(res, &mut self.read_buffer_2, &mut would_block)?
-            {
-                return Ok(Some((deserialise(&buf)?, sender_addr)));
+            if let RecvResult::WouldBlock(data) = handle_recv_res(res, &mut self.read_buffer_2)? {
+                return match data {
+                    Some((buf, sender_addr)) => Ok(Some((deserialise(&buf)?, sender_addr))),
+                    None => Ok(None),
+                };
             }
         }
-        Ok(None)
     }
 
     // Write a message to the socket.
@@ -318,7 +318,9 @@ impl Inner {
             };
 
             let res = self.sock.send(&data);
-            handle_send_res(res, &mut self.current_write, data.len(), data)?;
+            if !handle_send_res(res, &mut self.current_write, data.len(), data)? {
+                return Ok(false);
+            }
         }
     }
 
@@ -336,7 +338,9 @@ impl Inner {
             };
 
             let res = self.sock.send_to(&data, &peer);
-            handle_send_res(res, &mut self.current_write_2, data.len(), (data, peer))?;
+            if !handle_send_res(res, &mut self.current_write_2, data.len(), (data, peer))? {
+                return Ok(false);
+            }
         }
     }
 }
@@ -358,33 +362,29 @@ impl IsEmpty for (Vec<u8>, SocketAddr) {
     }
 }
 
+/// UDP socket receive result. It yields data only when socket returns EWOULDBLOCK.
+enum RecvResult<T> {
+    /// Stop reading socket and return some data, if any was read.
+    WouldBlock(Option<T>),
+    /// Keep reading UDP socket until it returns EWOULDBLOCK.
+    _ContinueRecv,
+}
+
+/// Buffers received UDP packets and checks when to stop calling `recv()`.
 fn handle_recv_res<T: IsEmpty>(
     recv_res: io::Result<T>,
     read_buffer: &mut VecDeque<T>,
-    would_block: &mut bool,
-) -> ::Res<Option<T>> {
+) -> ::Res<RecvResult<T>> {
     match recv_res {
         Ok(msg) => {
-            if msg.is_empty() {
-                let e = Err(SocketError::ZeroByteRead);
-                if !read_buffer.is_empty() {
-                    return match read_buffer.pop_front() {
-                        Some(msg) => Ok(Some(msg)),
-                        None => e,
-                    };
-                } else {
-                    return e;
-                }
+            if !msg.is_empty() {
+                read_buffer.push_back(msg);
             }
-            read_buffer.push_back(msg);
-            Ok(None)
+            Ok(RecvResult::_ContinueRecv)
         }
         Err(error) => {
-            return if error.kind() == ErrorKind::WouldBlock
-                || error.kind() == ErrorKind::Interrupted
-            {
-                *would_block = true;
-                Ok(read_buffer.pop_front())
+            if error.kind() == ErrorKind::WouldBlock || error.kind() == ErrorKind::Interrupted {
+                Ok(RecvResult::WouldBlock(read_buffer.pop_front()))
             } else {
                 Err(From::from(error))
             }
@@ -510,33 +510,31 @@ mod tests {
             use super::*;
 
             #[test]
-            fn it_sets_would_block_to_true() {
+            fn it_returns_would_block() {
                 let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
-                let mut would_block = false;
 
-                let res = handle_recv_res(
-                    Err(ErrorKind::WouldBlock.into()),
-                    &mut read_buf,
-                    &mut would_block,
-                );
+                let res = handle_recv_res(Err(ErrorKind::WouldBlock.into()), &mut read_buf);
 
-                assert!(would_block);
-                assert_eq!(unwrap!(res), None);
+                let wouldblock = match res {
+                    Ok(RecvResult::WouldBlock(_)) => true,
+                    _ => false,
+                };
+                assert!(wouldblock);
             }
 
             #[test]
             fn it_returns_last_buffered_item() {
                 let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
                 read_buf.push_front(vec![1, 2, 3]);
-                let mut would_block = false;
 
-                let next_msg = handle_recv_res(
-                    Err(ErrorKind::WouldBlock.into()),
-                    &mut read_buf,
-                    &mut would_block,
-                );
+                let res = handle_recv_res(Err(ErrorKind::WouldBlock.into()), &mut read_buf);
 
-                assert_eq!(unwrap!(next_msg), Some(vec![1, 2, 3]));
+                match res {
+                    Ok(RecvResult::WouldBlock(next_msg)) => {
+                        assert_eq!(next_msg, Some(vec![1, 2, 3]));
+                    }
+                    _ => panic!("Expected WouldBlock with data"),
+                }
             }
         }
 
@@ -546,12 +544,23 @@ mod tests {
             #[test]
             fn it_pushes_buffer_to_the_read_queue() {
                 let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
-                let mut would_block = false;
 
-                let next_msg = handle_recv_res(Ok(vec![1, 2, 3]), &mut read_buf, &mut would_block);
+                let _ = handle_recv_res(Ok(vec![1, 2, 3]), &mut read_buf);
 
-                assert_eq!(unwrap!(next_msg), None);
                 assert_eq!(read_buf[0], vec![1, 2, 3]);
+            }
+
+            #[test]
+            fn when_buff_is_empty_it_just_returns_continue_recv() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+
+                let res = handle_recv_res(Ok(vec![]), &mut read_buf);
+
+                match res {
+                    Ok(RecvResult::_ContinueRecv) => (),
+                    _ => panic!("Expected WouldBlock with data"),
+                }
+                assert_eq!(read_buf.len(), 0);
             }
         }
     }
