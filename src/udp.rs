@@ -367,7 +367,7 @@ enum RecvResult<T> {
     /// Stop reading socket and return some data, if any was read.
     WouldBlock(Option<T>),
     /// Keep reading UDP socket until it returns EWOULDBLOCK.
-    _ContinueRecv,
+    ContinueRecv,
 }
 
 /// Buffers received UDP packets and checks when to stop calling `recv()`.
@@ -380,7 +380,7 @@ fn handle_recv_res<T: IsEmpty>(
             if !msg.is_empty() {
                 read_buffer.push_back(msg);
             }
-            Ok(RecvResult::_ContinueRecv)
+            Ok(RecvResult::ContinueRecv)
         }
         Err(error) => {
             if error.kind() == ErrorKind::WouldBlock || error.kind() == ErrorKind::Interrupted {
@@ -557,7 +557,7 @@ mod tests {
                 let res = handle_recv_res(Ok(vec![]), &mut read_buf);
 
                 match res {
-                    Ok(RecvResult::_ContinueRecv) => (),
+                    Ok(RecvResult::ContinueRecv) => (),
                     _ => panic!("Expected WouldBlock with data"),
                 }
                 assert_eq!(read_buf.len(), 0);
