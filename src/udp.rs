@@ -1,13 +1,13 @@
 use maidsafe_utilities::serialisation::{deserialise, serialise};
 use mio::net::UdpSocket;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
+use out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
-use std::time::Instant;
 use {Priority, SocketConfig, SocketError};
 
 pub struct UdpSock {
@@ -205,11 +205,10 @@ struct Inner {
     peer: Option<SocketAddr>,
     read_buffer: VecDeque<Vec<u8>>,
     read_buffer_2: VecDeque<(Vec<u8>, SocketAddr)>,
-    write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
+    out_queue: OutQueue<Vec<u8>>,
     current_write: Option<Vec<u8>>,
-    write_queue_2: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>, SocketAddr)>>,
+    out_queue2: OutQueue<(Vec<u8>, SocketAddr)>,
     current_write_2: Option<(Vec<u8>, SocketAddr)>,
-    conf: SocketConfig,
 }
 
 impl Inner {
@@ -219,11 +218,10 @@ impl Inner {
             peer: None,
             read_buffer: Default::default(),
             read_buffer_2: Default::default(),
-            write_queue: Default::default(),
+            out_queue: OutQueue::new(conf.clone()),
             current_write: None,
-            write_queue_2: Default::default(),
+            out_queue2: OutQueue::new(conf),
             current_write_2: None,
-            conf,
         }
     }
 
@@ -235,110 +233,52 @@ impl Inner {
     //                     again in the next invocation of the `ready` handler.
     //   - Err(error):     there was an error reading from the socket.
     fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
-        if let Some(message) = self.read_from_buffer()? {
-            return Ok(Some(message));
+        if let Some(data) = self.read_buffer.pop_front() {
+            return Ok(Some(deserialise(&data)?));
         }
 
         // the mio reading window is max at 64k (64 * 1024)
         const BUF_LEN: usize = 64 * 1024;
         let mut buffer = [0; BUF_LEN];
-        let mut is_something_read = false;
 
         loop {
-            match self.sock.recv(&mut buffer) {
-                Ok(bytes_rxd) => {
-                    if bytes_rxd == 0 {
-                        let e = Err(SocketError::ZeroByteRead);
-                        if is_something_read {
-                            return match self.read_from_buffer() {
-                                r @ Ok(Some(_)) | r @ Err(_) => r,
-                                Ok(None) => e,
-                            };
-                        } else {
-                            return e;
-                        }
-                    }
-                    self.read_buffer.push_back(buffer[..bytes_rxd].to_vec());
-                    is_something_read = true;
-                }
-                Err(error) => {
-                    return if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.read_from_buffer()
-                    } else {
-                        Err(From::from(error))
-                    }
-                }
+            let res = self
+                .sock
+                .recv(&mut buffer)
+                .map(|bytes_read| buffer[..bytes_read].to_vec());
+            if let RecvResult::WouldBlock(data) = handle_recv_res(res, &mut self.read_buffer)? {
+                return match data {
+                    Some(buf) => Ok(Some(deserialise(&buf)?)),
+                    None => Ok(None),
+                };
             }
         }
-    }
-
-    fn read_from_buffer<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
-        let data = match self.read_buffer.pop_front() {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
-        // deserialise_with_limit() which will require us to use `Bounded` which is a type in
-        // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
-        Ok(Some(deserialise(&data)?))
     }
 
     fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
-        if let Some(pkg) = self.read_from_buffer_2()? {
-            return Ok(Some(pkg));
+        if let Some((data, peer)) = self.read_buffer_2.pop_front() {
+            // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
+            // deserialise_with_limit() which will require us to use `Bounded` which is a type in
+            // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
+            return Ok(Some((deserialise(&data)?, peer)));
         }
 
         // the mio reading window is max at 64k (64 * 1024)
         const BUF_LEN: usize = 64 * 1024;
         let mut buffer = [0; BUF_LEN];
-        let mut is_something_read = false;
 
         loop {
-            match self.sock.recv_from(&mut buffer) {
-                Ok((bytes_rxd, peer)) => {
-                    if bytes_rxd == 0 {
-                        let e = Err(SocketError::ZeroByteRead);
-                        if is_something_read {
-                            return match self.read_from_buffer_2() {
-                                r @ Ok(Some(_)) | r @ Err(_) => r,
-                                Ok(None) => e,
-                            };
-                        } else {
-                            return e;
-                        }
-                    }
-                    self.read_buffer_2
-                        .push_back((buffer[..bytes_rxd].to_vec(), peer));
-                    is_something_read = true;
-                }
-                Err(error) => {
-                    return if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.read_from_buffer_2()
-                    } else {
-                        Err(From::from(error))
-                    }
-                }
+            let res = self
+                .sock
+                .recv_from(&mut buffer)
+                .map(|(bytes_read, sender_addr)| (buffer[..bytes_read].to_vec(), sender_addr));
+            if let RecvResult::WouldBlock(data) = handle_recv_res(res, &mut self.read_buffer_2)? {
+                return match data {
+                    Some((buf, sender_addr)) => Ok(Some((deserialise(&buf)?, sender_addr))),
+                    None => Ok(None),
+                };
             }
         }
-    }
-
-    fn read_from_buffer_2<T: DeserializeOwned + Serialize>(
-        &mut self,
-    ) -> ::Res<Option<(T, SocketAddr)>> {
-        let (data, peer) = match self.read_buffer_2.pop_front() {
-            Some(pkg) => pkg,
-            None => return Ok(None),
-        };
-
-        // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
-        // deserialise_with_limit() which will require us to use `Bounded` which is a type in
-        // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
-        Ok(Some((deserialise(&data)?, peer)))
     }
 
     // Write a message to the socket.
@@ -349,142 +289,133 @@ impl Inner {
     //                 will be attempted in the next write schedule.
     //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        let expired_keys: Vec<u8> = self
-            .write_queue
-            .iter()
-            .skip_while(|&(&priority, queue)| {
-                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
-                queue.front().map_or(true, |&(ref timestamp, _)| {
-                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
-                })
-            }).map(|(&priority, _)| priority)
-            .collect();
-        let dropped_msgs: usize = expired_keys
-            .iter()
-            .filter_map(|priority| self.write_queue.remove(priority))
-            .map(|queue| queue.len())
-            .sum();
-        if dropped_msgs > 0 {
-            trace!(
-                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
-                dropped_msgs,
-                expired_keys[0]
-            );
-        }
-
+        let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
-            let entry = self
-                .write_queue
-                .entry(priority)
-                .or_insert_with(|| VecDeque::with_capacity(10));
-            entry.push_back((Instant::now(), serialise(&msg)?));
+            self.out_queue.push(serialise(&msg)?, priority);
         }
+        self.flush_write_until_would_block()
+    }
 
+    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
+        let _ = self.out_queue2.drop_expired();
+        if let Some((msg, peer, priority)) = msg {
+            self.out_queue2.push((serialise(&msg)?, peer), priority);
+        }
+        self.flush_write_to_until_would_block()
+    }
+
+    /// Returns `Ok(false)`, if write to the underlying stream would block.
+    fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
         loop {
-            let data = if let Some(data) = self.current_write.take() {
+            let data = if let Some(data) = self
+                .current_write
+                .take()
+                .or_else(|| self.out_queue.next_msg())
+            {
                 data
             } else {
-                let (key, (_time_stamp, data), empty) = match self.write_queue.iter_mut().next() {
-                    Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                    None => return Ok(true),
-                };
-                if empty {
-                    let _ = self.write_queue.remove(&key);
-                }
-                data
+                return Ok(true);
             };
 
-            match self.sock.send(&data) {
-                Ok(bytes_txd) => {
-                    if bytes_txd < data.len() {
-                        warn!(
-                            "Partial datagram sent. Will likely be interpreted as corrupted.
-                               Queued to be sent again."
-                        );
-                        self.current_write = Some(data);
-                    }
-                }
-                Err(error) => {
-                    if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.current_write = Some(data);
-                        return Ok(false);
-                    } else {
-                        return Err(From::from(error));
-                    }
-                }
+            let res = self.sock.send(&data);
+            if !handle_send_res(res, &mut self.current_write, data.len(), data)? {
+                return Ok(false);
             }
         }
     }
 
-    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
-        let expired_keys: Vec<u8> = self
-            .write_queue_2
-            .iter()
-            .skip_while(|&(&priority, queue)| {
-                priority < self.conf.msg_drop_priority || // Don't drop high-priority messages.
-                queue.front().map_or(true, |&(ref timestamp, _, _)| {
-                    timestamp.elapsed().as_secs() <= self.conf.max_msg_age_secs
-                })
-            }).map(|(&priority, _)| priority)
-            .collect();
-        let dropped_msgs: usize = expired_keys
-            .iter()
-            .filter_map(|priority| self.write_queue_2.remove(priority))
-            .map(|queue| queue.len())
-            .sum();
-        if dropped_msgs > 0 {
-            trace!(
-                "Insufficient bandwidth. Dropping {} messages with priority >= {}.",
-                dropped_msgs,
-                expired_keys[0]
-            );
-        }
-
-        if let Some((msg, peer, priority)) = msg {
-            let entry = self
-                .write_queue_2
-                .entry(priority)
-                .or_insert_with(|| VecDeque::with_capacity(10));
-            entry.push_back((Instant::now(), serialise(&msg)?, peer));
-        }
-
+    /// Returns `Ok(false)`, if write to the underlying stream would block.
+    fn flush_write_to_until_would_block(&mut self) -> ::Res<bool> {
         loop {
-            let (data, peer) = if let Some(pkg) = self.current_write_2.take() {
-                pkg
+            let (data, peer) = if let Some(data_peer) = self
+                .current_write_2
+                .take()
+                .or_else(|| self.out_queue2.next_msg())
+            {
+                data_peer
             } else {
-                let (key, (_time_stamp, data, peer), empty) =
-                    match self.write_queue_2.iter_mut().next() {
-                        Some((key, queue)) => (*key, unwrap!(queue.pop_front()), queue.is_empty()),
-                        None => return Ok(true),
-                    };
-                if empty {
-                    let _ = self.write_queue_2.remove(&key);
-                }
-                (data, peer)
+                return Ok(true);
             };
 
-            match self.sock.send_to(&data, &peer) {
-                Ok(bytes_txd) => {
-                    if bytes_txd < data.len() {
-                        warn!(
-                            "Partial datagram sent. Will likely be interpreted as corrupted.
-                               Queued to be sent again."
-                        );
-                        self.current_write_2 = Some((data, peer));
-                    }
-                }
-                Err(error) => {
-                    if error.kind() == ErrorKind::WouldBlock
-                        || error.kind() == ErrorKind::Interrupted
-                    {
-                        self.current_write_2 = Some((data, peer));
-                        return Ok(false);
-                    } else {
-                        return Err(From::from(error));
-                    }
-                }
+            let res = self.sock.send_to(&data, &peer);
+            if !handle_send_res(res, &mut self.current_write_2, data.len(), (data, peer))? {
+                return Ok(false);
+            }
+        }
+    }
+}
+
+/// Helper trait for `handle_recv_res()`.
+trait IsEmpty {
+    fn is_empty(&self) -> bool;
+}
+
+impl IsEmpty for Vec<u8> {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl IsEmpty for (Vec<u8>, SocketAddr) {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// UDP socket receive result. It yields data only when socket returns EWOULDBLOCK.
+enum RecvResult<T> {
+    /// Stop reading socket and return some data, if any was read.
+    WouldBlock(Option<T>),
+    /// Keep reading UDP socket until it returns EWOULDBLOCK.
+    ContinueRecv,
+}
+
+/// Buffers received UDP packets and checks when to stop calling `recv()`.
+fn handle_recv_res<T: IsEmpty>(
+    recv_res: io::Result<T>,
+    read_buffer: &mut VecDeque<T>,
+) -> ::Res<RecvResult<T>> {
+    match recv_res {
+        Ok(msg) => {
+            if !msg.is_empty() {
+                read_buffer.push_back(msg);
+            }
+            Ok(RecvResult::ContinueRecv)
+        }
+        Err(error) => {
+            if error.kind() == ErrorKind::WouldBlock || error.kind() == ErrorKind::Interrupted {
+                Ok(RecvResult::WouldBlock(read_buffer.pop_front()))
+            } else {
+                Err(From::from(error))
+            }
+        }
+    }
+}
+
+/// If failed to send a messages, requeue it.
+fn handle_send_res<M>(
+    send_res: io::Result<usize>,
+    current_write: &mut Option<M>,
+    msg_len: usize,
+    msg: M,
+) -> ::Res<bool> {
+    match send_res {
+        Ok(bytes_txd) => {
+            if bytes_txd < msg_len {
+                warn!(
+                    "Partial datagram sent. Will likely be interpreted as corrupted.
+                       Queued to be sent again."
+                );
+                *current_write = Some(msg);
+            }
+            Ok(true)
+        }
+        Err(error) => {
+            if error.kind() == ErrorKind::WouldBlock || error.kind() == ErrorKind::Interrupted {
+                *current_write = Some(msg);
+                Ok(false)
+            } else {
+                Err(From::from(error))
             }
         }
     }
@@ -513,5 +444,124 @@ impl Evented for Inner {
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
         self.sock.deregister(poll)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod handle_send_res {
+        use super::*;
+
+        #[test]
+        fn it_doesnt_alter_current_write_when_all_bytes_were_sent() {
+            let mut current_write = None;
+
+            let res = handle_send_res(Ok(100), &mut current_write, 100, vec![1; 100]);
+
+            assert_eq!(unwrap!(res), true);
+            assert_eq!(current_write, None);
+        }
+
+        #[test]
+        fn when_partial_message_was_sent_it_sets_current_write_to_data_to_be_sent_again() {
+            let mut current_write = None;
+
+            let res = handle_send_res(Ok(3), &mut current_write, 5, vec![1, 2, 3, 4, 5]);
+
+            assert_eq!(unwrap!(res), true);
+            assert_eq!(current_write, Some(vec![1, 2, 3, 4, 5]));
+        }
+
+        #[test]
+        fn when_result_is_error_would_block_it_returns_false() {
+            let mut current_write = None;
+
+            let res = handle_send_res(
+                Err(ErrorKind::WouldBlock.into()),
+                &mut current_write,
+                5,
+                vec![1, 2, 3, 4, 5],
+            );
+
+            assert_eq!(unwrap!(res), false);
+        }
+
+        #[test]
+        fn when_result_is_error_would_block_it_sets_current_write_to_data_to_be_sent_again() {
+            let mut current_write = None;
+
+            let _ = handle_send_res(
+                Err(ErrorKind::WouldBlock.into()),
+                &mut current_write,
+                5,
+                vec![1, 2, 3, 4, 5],
+            );
+
+            assert_eq!(current_write, Some(vec![1, 2, 3, 4, 5]));
+        }
+    }
+
+    mod handle_recv_res {
+        use super::*;
+
+        mod when_result_is_error_would_block {
+            use super::*;
+
+            #[test]
+            fn it_returns_would_block() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+
+                let res = handle_recv_res(Err(ErrorKind::WouldBlock.into()), &mut read_buf);
+
+                let wouldblock = match res {
+                    Ok(RecvResult::WouldBlock(_)) => true,
+                    _ => false,
+                };
+                assert!(wouldblock);
+            }
+
+            #[test]
+            fn it_returns_last_buffered_item() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+                read_buf.push_front(vec![1, 2, 3]);
+
+                let res = handle_recv_res(Err(ErrorKind::WouldBlock.into()), &mut read_buf);
+
+                match res {
+                    Ok(RecvResult::WouldBlock(next_msg)) => {
+                        assert_eq!(next_msg, Some(vec![1, 2, 3]));
+                    }
+                    _ => panic!("Expected WouldBlock with data"),
+                }
+            }
+        }
+
+        mod when_result_is_received_buffer {
+            use super::*;
+
+            #[test]
+            fn it_pushes_buffer_to_the_read_queue() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+
+                let _ = handle_recv_res(Ok(vec![1, 2, 3]), &mut read_buf);
+
+                assert_eq!(read_buf[0], vec![1, 2, 3]);
+            }
+
+            #[test]
+            fn when_buff_is_empty_it_just_returns_continue_recv() {
+                let mut read_buf: VecDeque<Vec<u8>> = VecDeque::new();
+
+                let res = handle_recv_res(Ok(vec![]), &mut read_buf);
+
+                match res {
+                    Ok(RecvResult::ContinueRecv) => (),
+                    _ => panic!("Expected WouldBlock with data"),
+                }
+                assert_eq!(read_buf.len(), 0);
+            }
+        }
     }
 }

@@ -168,7 +168,7 @@ impl Evented for TcpSock {
 struct Inner {
     stream: TcpStream,
     msg_reader: LenDelimitedReader,
-    out_queue: OutQueue,
+    out_queue: OutQueue<Vec<u8>>,
     current_write: Option<Vec<u8>>,
 }
 
