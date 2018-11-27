@@ -20,6 +20,9 @@ extern crate maidsafe_utilities;
 extern crate mio;
 extern crate safe_crypto;
 extern crate serde;
+#[cfg(test)]
+#[macro_use]
+extern crate hamcrest2;
 
 // #[cfg(feature = "enable-udt")]
 // extern crate libudt4_sys;

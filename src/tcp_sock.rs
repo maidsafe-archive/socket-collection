@@ -1,4 +1,3 @@
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use crypto::{DecryptContext, EncryptContext};
 use mio::tcp::TcpStream;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
@@ -7,7 +6,6 @@ use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
-use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
 use {Priority, SocketConfig, SocketError};
@@ -357,13 +355,15 @@ impl Drop for Inner {
 
 /// Serialize given value and write to a buffer with 4 byte length header.
 fn serialize_with_len<T: Serialize>(value: T, enc_ctx: &EncryptContext) -> ::Res<Vec<u8>> {
-    let encrypted = enc_ctx.encrypt(&value)?;
+    let encrypted_data = enc_ctx.encrypt(&value)?;
+    let encrypted_len = enc_ctx.encrypt(&(encrypted_data.len() as u32))?;
 
-    let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>() + encrypted.len()));
-    let _ = data.write_u32::<LittleEndian>(encrypted.len() as u32);
+    let mut data = Cursor::new(Vec::with_capacity(
+        encrypted_len.len() + encrypted_data.len(),
+    ));
     // TODO(povilas): if safe_crypto implements encrypt_into, use that to reduce data copying
-    let bytes_written = data.write(&encrypted)?;
-    debug_assert_eq!(bytes_written, encrypted.len());
+    let _ = data.write(&encrypted_len)?;
+    let _ = data.write(&encrypted_data)?;
 
     Ok(data.into_inner())
 }
@@ -407,18 +407,20 @@ impl LenDelimitedReader {
     }
 
     fn try_read_header(&mut self) -> ::Res<bool> {
-        let u32_size = mem::size_of::<u32>();
-        if self.read_buffer.len() < u32_size {
+        if self.read_buffer.len() < self.dec_ctx.encrypted_size_len() {
             return Ok(false);
         }
 
-        self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
+        let data_len: u32 = self
+            .dec_ctx
+            .decrypt(&self.read_buffer[..self.dec_ctx.encrypted_size_len()])?;
+        self.read_len = data_len as usize;
 
         if self.read_len > self.max_payload_size {
             return Err(SocketError::PayloadSizeProhibitive);
         }
 
-        self.read_buffer = self.read_buffer[u32_size..].to_owned();
+        self.read_buffer = self.read_buffer[self.dec_ctx.encrypted_size_len()..].to_owned();
         Ok(self.read_len > 0)
     }
 
@@ -432,6 +434,7 @@ impl LenDelimitedReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hamcrest2::prelude::*;
     use maidsafe_utilities::serialisation::serialise;
     use safe_crypto::gen_encrypt_keypair;
     use DEFAULT_MAX_PAYLOAD_SIZE;
@@ -441,14 +444,14 @@ mod tests {
 
         proptest! {
             #[test]
-            fn it_writes_4_byte_data_length(data_len in (0..65000)) {
+            fn it_writes_encrypted_data_length(data_len in (0..65000)) {
                 let data_len = data_len as usize;
                 let exp_serialised = unwrap!(serialise(&vec![1u8; data_len]));
+                let crypto_ctx = EncryptContext::null();
 
-                let buf = unwrap!(serialize_with_len(vec![1u8; data_len], &EncryptContext::null()));
+                let buf = unwrap!(serialize_with_len(vec![1u8; data_len], &crypto_ctx));
 
-                let len = unwrap!(Cursor::new(buf[0..4].to_vec()).read_u32::<LittleEndian>()) as usize;
-                assert_eq!(len, exp_serialised.len());
+                assert_that!(buf.len(), eq(exp_serialised.len() + crypto_ctx.encrypted_size_len()));
             }
         }
     }

@@ -61,6 +61,18 @@ impl EncryptContext {
             }
         })
     }
+
+    /// Our data size is 32 bit number. When we encrypt this number with `safe_crypto`, we get a
+    /// constant size byte array. This size depends on encryption variation though.
+    pub fn encrypted_size_len(&self) -> usize {
+        match *self {
+            // null encryption serializes 32 bit number into 4 byte array
+            EncryptContext::Null => 4,
+            // safe_crypto always serializes 32 bit number into 52 byte array
+            EncryptContext::Authenticated { .. } => 52,
+            EncryptContext::AnonymousEncrypt { .. } => 52,
+        }
+    }
 }
 
 /// Simplifies decryption by holding the necessary context - keys to decrypt data.
@@ -118,12 +130,54 @@ impl DecryptContext {
             } => our_sk.anonymously_decrypt(msg, our_pk)?,
         })
     }
+
+    /// The length of encrypted size variable. The returned value must match
+    /// `EncryptContext::encrypted_size_len()`, so that we could be able to decrypt it.
+    pub fn encrypted_size_len(&self) -> usize {
+        match *self {
+            // null encryption serializes 32 bit number into 4 byte array
+            DecryptContext::Null => 4,
+            // safe_crypto always serializes 32 bit number into 52 byte array
+            DecryptContext::Authenticated { .. } => 52,
+            DecryptContext::AnonymousDecrypt { .. } => 52,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hamcrest2::prelude::*;
     use safe_crypto::gen_encrypt_keypair;
+    use std::u32::MAX as MAX_U32;
+    use DEFAULT_MAX_PAYLOAD_SIZE;
+
+    mod encrypt_context {
+        use super::*;
+
+        #[test]
+        fn encrypt_always_returns_52_byte_array_for_4_byte_input_with_anonymous_encryption() {
+            let (pk, _sk) = gen_encrypt_keypair();
+            let enc_ctx = EncryptContext::anonymous_encrypt(pk);
+
+            for size in &[0u32, 25000, DEFAULT_MAX_PAYLOAD_SIZE as u32, MAX_U32] {
+                let encrypted = unwrap!(enc_ctx.encrypt(&size));
+                assert_that!(&encrypted, len(52));
+            }
+        }
+
+        #[test]
+        fn encrypt_always_returns_52_byte_array_for_4_byte_input_with_authenticated_encryption() {
+            let (_, sk1) = gen_encrypt_keypair();
+            let (pk2, _) = gen_encrypt_keypair();
+            let enc_ctx = EncryptContext::authenticated(sk1.shared_secret(&pk2));
+
+            for size in &[0u32, 25000, DEFAULT_MAX_PAYLOAD_SIZE as u32, MAX_U32] {
+                let encrypted = unwrap!(enc_ctx.encrypt(&size));
+                assert_that!(&encrypted, len(52));
+            }
+        }
+    }
 
     #[test]
     fn null_encryption_serializes_and_deserializes_data() {
