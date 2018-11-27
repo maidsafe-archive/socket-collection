@@ -26,6 +26,7 @@ extern crate serde;
 // #[cfg(feature = "enable-udt")]
 // extern crate udt as udt_extern;
 
+pub use crypto::{DecryptContext, EncryptContext};
 pub use error::SocketError;
 pub use tcp_sock::TcpSock;
 pub use udp::UdpSock;
@@ -65,6 +66,10 @@ pub struct SocketConfig {
     pub msg_drop_priority: u8,
     /// Maximum age of a message waiting to be sent. If a message is older, the queue is dropped.
     pub max_msg_age_secs: u64,
+    /// Data that goes throught socket encryption scheme.
+    pub enc_ctx: EncryptContext,
+    /// Data that goes throught socket decryption scheme.
+    pub dec_ctx: DecryptContext,
 }
 
 impl Default for SocketConfig {
@@ -73,6 +78,8 @@ impl Default for SocketConfig {
             max_payload_size: DEFAULT_MAX_PAYLOAD_SIZE,
             msg_drop_priority: DEFAULT_MSG_DROP_PRIORITY,
             max_msg_age_secs: DEFAULT_MAX_MSG_AGE_SECS,
+            enc_ctx: Default::default(),
+            dec_ctx: Default::default(),
         }
     }
 }

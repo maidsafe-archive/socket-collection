@@ -242,10 +242,10 @@ impl Inner {
             read_buffer_2: Default::default(),
             out_queue: OutQueue::new(conf.clone()),
             current_write: None,
-            out_queue2: OutQueue::new(conf),
+            out_queue2: OutQueue::new(conf.clone()),
             current_write_2: None,
-            enc_ctx: EncryptContext::null(),
-            dec_ctx: DecryptContext::null(),
+            enc_ctx: conf.enc_ctx,
+            dec_ctx: conf.dec_ctx,
         }
     }
 

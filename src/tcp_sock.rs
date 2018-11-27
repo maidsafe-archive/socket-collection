@@ -199,12 +199,14 @@ impl Inner {
     }
 
     fn new_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
+        let mut msg_reader = LenDelimitedReader::new(conf.max_payload_size);
+        msg_reader.dec_ctx = conf.dec_ctx.clone();
         Self {
             stream,
-            msg_reader: LenDelimitedReader::new(conf.max_payload_size),
+            msg_reader,
+            enc_ctx: conf.enc_ctx.clone(),
             out_queue: OutQueue::new(conf),
             current_write: None,
-            enc_ctx: EncryptContext::null(),
         }
     }
 
