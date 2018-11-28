@@ -11,6 +11,21 @@ use std::time::Duration;
 use {Priority, SocketConfig, SocketError};
 
 /// TCP socket which by default is uninitialized.
+/// Asynchronous TCP socket wrapper with some specific behavior to our use cases:
+///
+/// * `TcpSock` takes care of message serialization and it's boundaries - no need to mess with the
+///   byte stream.
+/// * The maximum message length is [`DEFAULT_MAX_PAYLOAD_SIZE`].
+/// * Incoming/outgoing messages are buffered.
+/// * All messages are encrypted with [`EncryptContext`] and decrypted with [`DecryptContext`] that
+///   can be changed at any time.
+///
+/// The socket is uninitialized by default and will result with [`SocketError`], if used.
+///
+/// [`DEFAULT_MAX_PAYLOAD_SIZE`]: constant.DEFAULT_MAX_PAYLOAD_SIZE.html
+/// [`EncryptContext`]: enum.EncryptContext.html
+/// [`DecryptContext`]: enum.DecryptContext.html
+/// [`SocketError`]: enum.SocketError.html
 pub struct TcpSock {
     inner: Option<Inner>,
 }
@@ -29,7 +44,9 @@ impl TcpSock {
         Ok(Self::wrap_with_conf(stream, conf))
     }
 
-    /// Wraps `TcpStream` and uses default socket configuration.
+    /// Wraps [`TcpStream`] and uses default socket configuration.
+    ///
+    /// [`TcpStream`]: https://docs.rs/mio/0.6.*/mio/net/struct.TcpStream.html
     pub fn wrap(stream: TcpStream) -> Self {
         Self {
             inner: Some(Inner::new(stream)),
@@ -63,6 +80,9 @@ impl TcpSock {
         Ok(())
     }
 
+    /// Sets TCP [`SO_LINGER`] value for the underlying socket.
+    ///
+    /// [`SO_LINGER`]: https://linux.die.net/man/3/setsockopt
     pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
         let inner = self
             .inner
@@ -72,6 +92,7 @@ impl TcpSock {
         Ok(())
     }
 
+    /// Returns local socket address.
     pub fn local_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
             .inner
@@ -80,6 +101,7 @@ impl TcpSock {
         Ok(inner.stream.local_addr()?)
     }
 
+    /// Returns the address of the remote peer socket is connected to.
     pub fn peer_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
             .inner
@@ -88,6 +110,7 @@ impl TcpSock {
         Ok(inner.stream.peer_addr()?)
     }
 
+    /// Retrieve last socket error, if one exists.
     pub fn take_error(&self) -> ::Res<Option<io::Error>> {
         let inner = self
             .inner
@@ -96,13 +119,14 @@ impl TcpSock {
         Ok(inner.stream.take_error()?)
     }
 
-    // Read message from the socket. Call this from inside the `ready` handler.
-    //
-    // Returns:
-    //   - Ok(Some(data)): data has been successfully read from the socket
-    //   - Ok(None):       there is not enough data in the socket. Call `read`
-    //                     again in the next invocation of the `ready` handler.
-    //   - Err(error):     there was an error reading from the socket.
+    /// Read message from the socket. Call this from inside the `ready` handler.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(Some(data)): data has been successfully read from the socket
+    ///   - Ok(None):       there is not enough data in the socket. Call `read()`
+    ///                     again in the next invocation of the `ready` handler.
+    ///   - Err(error):     there was an error reading from the socket.
     pub fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
         let inner = self
             .inner
@@ -111,13 +135,14 @@ impl TcpSock {
         inner.read()
     }
 
-    // Write a message to the socket.
-    //
-    // Returns:
-    //   - Ok(true):   the message has been successfully written.
-    //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 will be attempted in the next write schedule.
-    //   - Err(error): there was an error while writing to the socket.
+    /// Write a message to the socket.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(true):   the message has been successfully written.
+    ///   - Ok(false):  the message has been queued, but not yet fully written.
+    ///                 will be attempted in the next write schedule.
+    ///   - Err(error): there was an error while writing to the socket.
     pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let inner = self
             .inner
@@ -216,13 +241,6 @@ impl Inner {
         self.msg_reader.dec_ctx = dec_ctx;
     }
 
-    // Read message from the socket. Call this from inside the `ready` handler.
-    //
-    // Returns:
-    //   - Ok(Some(data)): data has been successfully read from the socket.
-    //   - Ok(None):       there is not enough data in the socket. Call `read`
-    //                     again in the next invocation of the `ready` handler.
-    //   - Err(error):     there was an error reading from the socket.
     fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
         if let Some(message) = self.msg_reader.try_read()? {
             return Ok(Some(message));
@@ -266,13 +284,6 @@ impl Inner {
         }
     }
 
-    // Write a message to the socket.
-    //
-    // Returns:
-    //   - Ok(true):   the message has been successfully written.
-    //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 will be attempted in the next write schedule.
-    //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
