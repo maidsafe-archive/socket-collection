@@ -7,7 +7,7 @@ extern crate socket_collection;
 use mio::net::TcpListener;
 use mio::{Events, Poll, PollOpt, Ready, Token};
 use rand::Rng;
-use socket_collection::{SocketError, TcpSock};
+use socket_collection::{Socket, SocketError, TcpSock};
 
 #[test]
 fn data_transfer_up_to_2_mb() {

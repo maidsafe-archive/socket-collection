@@ -50,6 +50,8 @@ mod out_queue;
 mod tcp_sock;
 mod udp;
 
+use priv_prelude::*;
+
 // #[cfg(feature = "enable-udt")]
 // mod udt;
 
@@ -96,3 +98,59 @@ impl Default for SocketConfig {
 
 /// `Result` type specialised for this crate
 pub type Res<T> = Result<T, SocketError>;
+
+/// Protocol agnostic socket trait. It is implemented for [`UdpSock`] and [`TcpSock`].
+///
+/// [`UdpSock`]: struct.UdpSock.html
+/// [`TcpSock`]: struct.TcpSock.html
+pub trait Socket {
+    /// The underlying mio socket type that structs implementing `Socket` trait wrap.
+    type Inner;
+
+    /// Specify data encryption context which will determine how outgoing data is encrypted.
+    fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()>;
+
+    /// Specify data decryption context which will determine how incoming data is decrypted.
+    fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()>;
+
+    /// Get the local address socket is bound to.
+    fn local_addr(&self) -> ::Res<SocketAddr>;
+
+    /// Get the address socket was connected to.
+    fn peer_addr(&self) -> ::Res<SocketAddr>;
+
+    /// Set Time To Live value for the underlying socket.
+    fn set_ttl(&self, ttl: u32) -> ::Res<()>;
+
+    /// Retrieve Time To Live value.
+    fn ttl(&self) -> ::Res<u32>;
+
+    /// Retrieve last socket error, if one exists.
+    fn take_error(&self) -> ::Res<Option<std::io::Error>>;
+
+    /// Read message from the connected socket. Call this method once socket becomes readable.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(Some(data)): data has been successfully read from the socket
+    ///   - Ok(None):       there is not enough data in the socket. Call `read()`
+    ///                     again in the next invocation of the `ready` handler.
+    ///   - Err(error):     there was an error reading from the socket.
+    fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>>;
+
+    /// Write a message to the connected socket.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(true):   the message has been successfully written.
+    ///   - Ok(false):  the message has been queued, but not yet fully written.
+    ///                 will be attempted in the next write schedule.
+    ///   - Err(error): there was an error while writing to the socket.
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool>;
+
+    /// Sets linger time for connection based protocols.
+    fn set_linger(&self, dur: Option<Duration>) -> ::Res<()>;
+
+    /// Return the wrapped mio socket.
+    fn into_underlying_sock(self) -> ::Res<Self::Inner>;
+}

@@ -72,5 +72,9 @@ quick_error! {
             display("Crypto related error: {}", e)
             from()
         }
+        /// Some operation is invalid in the given context.
+        InvalidOperation {
+            display("Operation not permitted")
+        }
     }
 }

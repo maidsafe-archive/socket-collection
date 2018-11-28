@@ -8,7 +8,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
-use {Priority, SocketConfig, SocketError};
+use {Priority, Socket, SocketConfig, SocketError};
 
 /// TCP socket which by default is uninitialized.
 /// Asynchronous TCP socket wrapper with some specific behavior to our use cases:
@@ -59,9 +59,13 @@ impl TcpSock {
             inner: Some(Inner::new_with_conf(stream, conf)),
         }
     }
+}
+
+impl Socket for TcpSock {
+    type Inner = TcpStream;
 
     /// Specify data encryption context which will determine how outgoing data is encrypted.
-    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+    fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -71,7 +75,7 @@ impl TcpSock {
     }
 
     /// Specify data decryption context which will determine how incoming data is decrypted.
-    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+    fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -80,10 +84,29 @@ impl TcpSock {
         Ok(())
     }
 
+    /// Set Time To Live value for the underlying TCP socket.
+    fn set_ttl(&self, ttl: u32) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.stream.set_ttl(ttl)?;
+        Ok(())
+    }
+
+    /// Retrieve Time To Live value.
+    fn ttl(&self) -> ::Res<u32> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.stream.ttl()?)
+    }
+
     /// Sets TCP [`SO_LINGER`] value for the underlying socket.
     ///
     /// [`SO_LINGER`]: https://linux.die.net/man/3/setsockopt
-    pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
+    fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
         let inner = self
             .inner
             .as_ref()
@@ -93,7 +116,7 @@ impl TcpSock {
     }
 
     /// Returns local socket address.
-    pub fn local_addr(&self) -> ::Res<SocketAddr> {
+    fn local_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
             .inner
             .as_ref()
@@ -102,7 +125,7 @@ impl TcpSock {
     }
 
     /// Returns the address of the remote peer socket is connected to.
-    pub fn peer_addr(&self) -> ::Res<SocketAddr> {
+    fn peer_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
             .inner
             .as_ref()
@@ -111,7 +134,7 @@ impl TcpSock {
     }
 
     /// Retrieve last socket error, if one exists.
-    pub fn take_error(&self) -> ::Res<Option<io::Error>> {
+    fn take_error(&self) -> ::Res<Option<io::Error>> {
         let inner = self
             .inner
             .as_ref()
@@ -127,7 +150,7 @@ impl TcpSock {
     ///   - Ok(None):       there is not enough data in the socket. Call `read()`
     ///                     again in the next invocation of the `ready` handler.
     ///   - Err(error):     there was an error reading from the socket.
-    pub fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
         let inner = self
             .inner
             .as_mut()
@@ -143,12 +166,30 @@ impl TcpSock {
     ///   - Ok(false):  the message has been queued, but not yet fully written.
     ///                 will be attempted in the next write schedule.
     ///   - Err(error): there was an error while writing to the socket.
-    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let inner = self
             .inner
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
         inner.write(msg)
+    }
+
+    /// Retrieve the wrapped mio `TcpStream`.
+    fn into_underlying_sock(mut self) -> ::Res<Self::Inner> {
+        let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.stream)
+    }
+}
+
+// NOTE: ideally, we would implement `Drop` for `Inner` which actually owns the `TcpStream` so it's
+// natural that it should finalize it as well. Unfortunately, we cannot move `Inner.stream` out in
+// `TcpSock::into_underlying_sock()` in such case. Since `Inner` is not exposed publicly, this
+// design should successfully finalize TCP socket too.
+impl Drop for TcpSock {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let _ = inner.stream.shutdown(Shutdown::Both);
+        }
     }
 }
 
@@ -355,12 +396,6 @@ impl Evented for Inner {
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
         self.stream.deregister(poll)
-    }
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
 

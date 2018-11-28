@@ -11,7 +11,7 @@ use hamcrest2::prelude::*;
 use maidsafe_utilities::thread;
 use mio::*;
 use mio_extras::timer::Timer;
-use socket_collection::UdpSock;
+use socket_collection::{Socket, UdpSock};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};

@@ -8,7 +8,8 @@ use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
-use {Priority, SocketConfig, SocketError};
+use std::time::Duration;
+use {Priority, Socket, SocketConfig, SocketError};
 
 /// Asynchronous UDP socket wrapper with some specific behavior to our use cases:
 ///
@@ -48,26 +49,6 @@ impl UdpSock {
         Ok(Self::wrap_with_conf(UdpSocket::bind(addr)?, conf))
     }
 
-    /// Specify data encryption context which will determine how outgoing data is encrypted.
-    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        inner.set_encrypt_ctx(enc_ctx);
-        Ok(())
-    }
-
-    /// Specify data decryption context which will determine how incoming data is decrypted.
-    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        inner.set_decrypt_ctx(dec_ctx);
-        Ok(())
-    }
-
     /// Set default destination address for UDP socket.
     pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
         let inner = self
@@ -78,68 +59,6 @@ impl UdpSock {
         inner.peer = Some(*addr);
 
         Ok(())
-    }
-
-    /// Get the local address UDP socket is bound to.
-    pub fn local_addr(&self) -> ::Res<SocketAddr> {
-        let inner = self
-            .inner
-            .as_ref()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.sock.local_addr()?)
-    }
-
-    /// Get the address `UdpSock` was connected to.
-    pub fn peer_addr(&self) -> ::Res<SocketAddr> {
-        let inner = self
-            .inner
-            .as_ref()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.peer.ok_or(SocketError::UnconnectedUdpSocket)?)
-    }
-
-    /// Set Time To Live value for the underlying UDP socket.
-    pub fn set_ttl(&self, ttl: u32) -> ::Res<()> {
-        let inner = self
-            .inner
-            .as_ref()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        inner.sock.set_ttl(ttl)?;
-        Ok(())
-    }
-
-    /// Retrieve Time To Live value.
-    pub fn ttl(&self) -> ::Res<u32> {
-        let inner = self
-            .inner
-            .as_ref()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.sock.ttl()?)
-    }
-
-    /// Retrieve last socket error, if one exists.
-    pub fn take_error(&self) -> ::Res<Option<io::Error>> {
-        let inner = self
-            .inner
-            .as_ref()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.sock.take_error()?)
-    }
-
-    /// Read message from the connected socket. Call this from inside the `ready` handler.
-    ///
-    /// # Returns:
-    ///
-    ///   - Ok(Some(data)): data has been successfully read from the socket
-    ///   - Ok(None):       there is not enough data in the socket. Call `read()`
-    ///                     again in the next invocation of the `ready` handler.
-    ///   - Err(error):     there was an error reading from the socket.
-    pub fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        inner.read()
     }
 
     /// Read message from the socket. Call this from inside the `ready` handler.
@@ -156,22 +75,6 @@ impl UdpSock {
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
         inner.read_frm()
-    }
-
-    /// Write a message to the connected socket.
-    ///
-    /// # Returns:
-    ///
-    ///   - Ok(true):   the message has been successfully written.
-    ///   - Ok(false):  the message has been queued, but not yet fully written.
-    ///                 will be attempted in the next write schedule.
-    ///   - Err(error): there was an error while writing to the socket.
-    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or(SocketError::UninitialisedSocket)?;
-        inner.write(msg)
     }
 
     /// Write a message to the socket to the given address.
@@ -192,9 +95,116 @@ impl UdpSock {
             .ok_or(SocketError::UninitialisedSocket)?;
         inner.write_to(msg)
     }
+}
 
-    /// Retrieve the underlying mio `UdpSocket`.
-    pub fn into_underlying_sock(mut self) -> ::Res<UdpSocket> {
+impl Socket for UdpSock {
+    type Inner = UdpSocket;
+
+    /// Specify data encryption context which will determine how outgoing data is encrypted.
+    fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.set_encrypt_ctx(enc_ctx);
+        Ok(())
+    }
+
+    /// Specify data decryption context which will determine how incoming data is decrypted.
+    fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.set_decrypt_ctx(dec_ctx);
+        Ok(())
+    }
+
+    /// Get the local address UDP socket is bound to.
+    fn local_addr(&self) -> ::Res<SocketAddr> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.sock.local_addr()?)
+    }
+
+    /// Get the address `UdpSock` was connected to.
+    fn peer_addr(&self) -> ::Res<SocketAddr> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.peer.ok_or(SocketError::UnconnectedUdpSocket)?)
+    }
+
+    /// Set Time To Live value for the underlying UDP socket.
+    fn set_ttl(&self, ttl: u32) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.sock.set_ttl(ttl)?;
+        Ok(())
+    }
+
+    /// Retrieve Time To Live value.
+    fn ttl(&self) -> ::Res<u32> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.sock.ttl()?)
+    }
+
+    /// Retrieve last socket error, if one exists.
+    fn take_error(&self) -> ::Res<Option<io::Error>> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.sock.take_error()?)
+    }
+
+    /// Read message from the connected socket. Call this from inside the `ready` handler.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(Some(data)): data has been successfully read from the socket
+    ///   - Ok(None):       there is not enough data in the socket. Call `read()`
+    ///                     again in the next invocation of the `ready` handler.
+    ///   - Err(error):     there was an error reading from the socket.
+    fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.read()
+    }
+
+    /// Write a message to the connected socket.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(true):   the message has been successfully written.
+    ///   - Ok(false):  the message has been queued, but not yet fully written.
+    ///                 will be attempted in the next write schedule.
+    ///   - Err(error): there was an error while writing to the socket.
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.write(msg)
+    }
+
+    /// Not applicable to UDP socket. Returns `SocketError::InvalidOperation`.
+    fn set_linger(&self, _dur: Option<Duration>) -> ::Res<()> {
+        Err(SocketError::InvalidOperation)
+    }
+
+    /// Retrieve the wrapped mio `UdpSocket`.
+    fn into_underlying_sock(mut self) -> ::Res<Self::Inner> {
         let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
         Ok(inner.sock)
     }
