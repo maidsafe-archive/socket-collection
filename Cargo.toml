@@ -9,7 +9,6 @@ repository = "https://github.com/maidsafe/socket-collection"
 version = "0.3.0"
 
 [dependencies]
-byteorder = "~1.2.7"
 log = "~0.4.6"
 maidsafe_utilities = "~0.17.0"
 mio = "~0.6.16"

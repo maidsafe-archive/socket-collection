@@ -12,6 +12,11 @@ use safe_crypto::{PublicEncryptKey, SecretEncryptKey, SharedSecretKey};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+// safe_crypto always serializes 32 bit number into 52 byte array
+const ENCRYPTED_U32_LEN: usize = 52;
+// bincode serializes 32 bit number into 4 byte array
+const SERIALIZED_U32_LEN: usize = 4;
+
 /// Simplifies encryption by holding the necessary context - encryption keys.
 /// Allows "null" encryption where data is only serialized. See: null object pattern.
 #[derive(Clone, Debug)]
@@ -66,11 +71,9 @@ impl EncryptContext {
     /// constant size byte array. This size depends on encryption variation though.
     pub fn encrypted_size_len(&self) -> usize {
         match *self {
-            // null encryption serializes 32 bit number into 4 byte array
-            EncryptContext::Null => 4,
-            // safe_crypto always serializes 32 bit number into 52 byte array
-            EncryptContext::Authenticated { .. } => 52,
-            EncryptContext::AnonymousEncrypt { .. } => 52,
+            EncryptContext::Null => SERIALIZED_U32_LEN,
+            EncryptContext::Authenticated { .. } => ENCRYPTED_U32_LEN,
+            EncryptContext::AnonymousEncrypt { .. } => ENCRYPTED_U32_LEN,
         }
     }
 }
@@ -135,11 +138,9 @@ impl DecryptContext {
     /// `EncryptContext::encrypted_size_len()`, so that we could be able to decrypt it.
     pub fn encrypted_size_len(&self) -> usize {
         match *self {
-            // null encryption serializes 32 bit number into 4 byte array
-            DecryptContext::Null => 4,
-            // safe_crypto always serializes 32 bit number into 52 byte array
-            DecryptContext::Authenticated { .. } => 52,
-            DecryptContext::AnonymousDecrypt { .. } => 52,
+            DecryptContext::Null => SERIALIZED_U32_LEN,
+            DecryptContext::Authenticated { .. } => ENCRYPTED_U32_LEN,
+            DecryptContext::AnonymousDecrypt { .. } => ENCRYPTED_U32_LEN,
         }
     }
 }
@@ -156,25 +157,27 @@ mod tests {
         use super::*;
 
         #[test]
-        fn encrypt_always_returns_52_byte_array_for_4_byte_input_with_anonymous_encryption() {
+        fn encrypt_always_returns_constant_length_byte_array_for_4_byte_input_with_anonymous_encryption(
+) {
             let (pk, _sk) = gen_encrypt_keypair();
             let enc_ctx = EncryptContext::anonymous_encrypt(pk);
 
             for size in &[0u32, 25000, DEFAULT_MAX_PAYLOAD_SIZE as u32, MAX_U32] {
                 let encrypted = unwrap!(enc_ctx.encrypt(&size));
-                assert_that!(&encrypted, len(52));
+                assert_that!(&encrypted, len(ENCRYPTED_U32_LEN));
             }
         }
 
         #[test]
-        fn encrypt_always_returns_52_byte_array_for_4_byte_input_with_authenticated_encryption() {
+        fn encrypt_always_returns_constant_length_byte_array_for_4_byte_input_with_authenticated_encryption(
+) {
             let (_, sk1) = gen_encrypt_keypair();
             let (pk2, _) = gen_encrypt_keypair();
             let enc_ctx = EncryptContext::authenticated(sk1.shared_secret(&pk2));
 
             for size in &[0u32, 25000, DEFAULT_MAX_PAYLOAD_SIZE as u32, MAX_U32] {
                 let encrypted = unwrap!(enc_ctx.encrypt(&size));
-                assert_that!(&encrypted, len(52));
+                assert_that!(&encrypted, len(ENCRYPTED_U32_LEN));
             }
         }
     }

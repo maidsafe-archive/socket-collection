@@ -44,22 +44,22 @@ impl TcpSock {
     }
 
     /// Specify data encryption context which will determine how outgoing data is encrypted.
-    pub fn use_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
         let inner = self
             .inner
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
-        inner.use_encrypt_ctx(enc_ctx);
+        inner.set_encrypt_ctx(enc_ctx);
         Ok(())
     }
 
     /// Specify data decryption context which will determine how incoming data is decrypted.
-    pub fn use_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
         let inner = self
             .inner
             .as_mut()
             .ok_or(SocketError::UninitialisedSocket)?;
-        inner.use_decrypt_ctx(dec_ctx);
+        inner.set_decrypt_ctx(dec_ctx);
         Ok(())
     }
 
@@ -208,11 +208,11 @@ impl Inner {
         }
     }
 
-    fn use_encrypt_ctx(&mut self, enc_ctx: EncryptContext) {
+    fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) {
         self.enc_ctx = enc_ctx;
     }
 
-    fn use_decrypt_ctx(&mut self, dec_ctx: DecryptContext) {
+    fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) {
         self.msg_reader.dec_ctx = dec_ctx;
     }
 
@@ -383,7 +383,7 @@ impl LenDelimitedReader {
             read_buffer: Vec::new(),
             read_len: 0,
             max_payload_size,
-            dec_ctx: DecryptContext::null(),
+            dec_ctx: Default::default(),
         }
     }
 
