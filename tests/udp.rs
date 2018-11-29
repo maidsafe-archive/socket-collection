@@ -12,6 +12,7 @@ use maidsafe_utilities::thread;
 use mio::*;
 use mio_extras::timer::Timer;
 use socket_collection::UdpSock;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -24,6 +25,124 @@ fn udp_peers_connected_huge_data_exchange() {
 #[test]
 fn udp_peers_not_connected_huge_data_exchange() {
     udp_peers_huge_data_exchange_impl(false);
+}
+
+#[test]
+fn not_connected_socket_receives_packets_from_any_endpoint() {
+    const SOCKET1_TOKEN: Token = Token(0);
+    const SOCKET2_TOKEN: Token = Token(1);
+    const SOCKET3_TOKEN: Token = Token(2);
+
+    let mut sock1 = unwrap!(UdpSock::bind(&unwrap!("127.0.0.1:0".parse())));
+    let server_addr = unwrap!(sock1.local_addr());
+    let mut sock2 = unwrap!(UdpSock::bind(&unwrap!("127.0.0.1:0".parse())));
+    let sock2_addr = unwrap!(sock2.local_addr());
+    let mut sock3 = unwrap!(UdpSock::bind(&unwrap!("127.0.0.1:0".parse())));
+    let sock3_addr = unwrap!(sock3.local_addr());
+
+    let poll = unwrap!(Poll::new());
+    unwrap!(poll.register(&sock1, SOCKET1_TOKEN, Ready::readable(), PollOpt::edge()));
+    unwrap!(poll.register(&sock2, SOCKET2_TOKEN, Ready::writable(), PollOpt::edge()));
+    unwrap!(poll.register(&sock3, SOCKET3_TOKEN, Ready::writable(), PollOpt::edge()));
+
+    let mut received_from = Vec::new();
+    let mut events = Events::with_capacity(1024);
+    'event_loop: loop {
+        let _ = unwrap!(poll.poll(&mut events, None));
+        for event in events.iter() {
+            match event.token() {
+                SOCKET1_TOKEN => {
+                    loop {
+                        let res: Option<(Vec<u8>, _)> = unwrap!(sock1.read_frm());
+                        if let Some((_data, peer_addr)) = res {
+                            received_from.push(peer_addr);
+                        } else {
+                            break;
+                        }
+                    }
+                    if received_from.len() == 2 {
+                        break 'event_loop;
+                    }
+                }
+                SOCKET2_TOKEN => {
+                    let data_sent =
+                        unwrap!(sock2.write_to(Some((vec![1u8, 2, 3], server_addr, 1))));
+                    assert!(data_sent);
+                    unwrap!(poll.deregister(&sock2));
+                }
+                SOCKET3_TOKEN => {
+                    let data_sent =
+                        unwrap!(sock3.write_to(Some((vec![1u8, 2, 3], server_addr, 1))));
+                    assert!(data_sent);
+                    unwrap!(poll.deregister(&sock3));
+                }
+                _ => panic!("Unexpected event"),
+            }
+        }
+    }
+
+    assert_that!(
+        &received_from,
+        contains(vec![sock2_addr, sock3_addr]).exactly()
+    );
+}
+
+#[test]
+fn connected_socket_receives_packets_only_from_connected_socket() {
+    const SOCKET1_TOKEN: Token = Token(0);
+    const SOCKET2_TOKEN: Token = Token(1);
+    const SOCKET3_TOKEN: Token = Token(2);
+    const TIMEOUT_TOKEN: Token = Token(3);
+
+    let mut sock2 = unwrap!(UdpSock::bind(&unwrap!("127.0.0.1:0".parse())));
+    let sock2_addr = unwrap!(sock2.local_addr());
+
+    let mut sock1 = unwrap!(UdpSock::bind(&unwrap!("127.0.0.1:0".parse())));
+    unwrap!(sock1.connect(&sock2_addr));
+    let server_addr = unwrap!(sock1.local_addr());
+    let mut sock3 = unwrap!(UdpSock::bind(&unwrap!("127.0.0.1:0".parse())));
+
+    let poll = unwrap!(Poll::new());
+    unwrap!(poll.register(&sock1, SOCKET1_TOKEN, Ready::readable(), PollOpt::edge()));
+    unwrap!(poll.register(&sock2, SOCKET2_TOKEN, Ready::writable(), PollOpt::edge()));
+    unwrap!(poll.register(&sock3, SOCKET3_TOKEN, Ready::writable(), PollOpt::edge()));
+
+    let mut timer = Timer::default();
+    timer.set_timeout(Duration::from_secs(1), ()); // let's terminate the test after 1 second
+    unwrap!(poll.register(&timer, TIMEOUT_TOKEN, Ready::readable(), PollOpt::edge(),));
+
+    let mut received_from = HashSet::new();
+    let mut events = Events::with_capacity(1024);
+    'event_loop: loop {
+        let _ = unwrap!(poll.poll(&mut events, None));
+        for event in events.iter() {
+            match event.token() {
+                SOCKET1_TOKEN => loop {
+                    let res: Option<(Vec<u8>, _)> = unwrap!(sock1.read_frm());
+                    if let Some((_data, peer_addr)) = res {
+                        received_from.insert(peer_addr);
+                    } else {
+                        break;
+                    }
+                },
+                SOCKET2_TOKEN => {
+                    let data_sent =
+                        unwrap!(sock2.write_to(Some((vec![1u8, 2, 3], server_addr, 1))));
+                    assert!(data_sent);
+                }
+                SOCKET3_TOKEN => {
+                    let data_sent =
+                        unwrap!(sock3.write_to(Some((vec![1u8, 2, 3], server_addr, 1))));
+                    assert!(data_sent);
+                }
+                TIMEOUT_TOKEN => break 'event_loop,
+                _ => panic!("Unexpected event"),
+            }
+        }
+    }
+
+    assert_that!(received_from.len(), eq(1));
+    assert_that!(received_from.iter().next(), eq(Some(&sock2_addr)));
 }
 
 fn udp_peers_huge_data_exchange_impl(should_connect: bool) {
