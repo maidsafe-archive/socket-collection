@@ -1,5 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
+use crypto::{DecryptContext, EncryptContext};
 use mio::tcp::TcpStream;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
 use out_queue::OutQueue;
@@ -7,7 +6,6 @@ use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
-use std::mem;
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
 use {Priority, SocketConfig, SocketError};
@@ -43,6 +41,26 @@ impl TcpSock {
         Self {
             inner: Some(Inner::new_with_conf(stream, conf)),
         }
+    }
+
+    /// Specify data encryption context which will determine how outgoing data is encrypted.
+    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.set_encrypt_ctx(enc_ctx);
+        Ok(())
+    }
+
+    /// Specify data decryption context which will determine how incoming data is decrypted.
+    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.set_decrypt_ctx(dec_ctx);
+        Ok(())
     }
 
     pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
@@ -85,7 +103,7 @@ impl TcpSock {
     //   - Ok(None):       there is not enough data in the socket. Call `read`
     //                     again in the next invocation of the `ready` handler.
     //   - Err(error):     there was an error reading from the socket.
-    pub fn read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    pub fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
         let inner = self
             .inner
             .as_mut()
@@ -170,6 +188,7 @@ struct Inner {
     msg_reader: LenDelimitedReader,
     out_queue: OutQueue<Vec<u8>>,
     current_write: Option<Vec<u8>>,
+    enc_ctx: EncryptContext,
 }
 
 impl Inner {
@@ -178,12 +197,23 @@ impl Inner {
     }
 
     fn new_with_conf(stream: TcpStream, conf: SocketConfig) -> Self {
+        let mut msg_reader = LenDelimitedReader::new(conf.max_payload_size);
+        msg_reader.dec_ctx = conf.dec_ctx.clone();
         Self {
             stream,
-            msg_reader: LenDelimitedReader::new(conf.max_payload_size),
+            msg_reader,
+            enc_ctx: conf.enc_ctx.clone(),
             out_queue: OutQueue::new(conf),
             current_write: None,
         }
+    }
+
+    fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) {
+        self.enc_ctx = enc_ctx;
+    }
+
+    fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) {
+        self.msg_reader.dec_ctx = dec_ctx;
     }
 
     // Read message from the socket. Call this from inside the `ready` handler.
@@ -193,7 +223,7 @@ impl Inner {
     //   - Ok(None):       there is not enough data in the socket. Call `read`
     //                     again in the next invocation of the `ready` handler.
     //   - Err(error):     there was an error reading from the socket.
-    fn read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
         if let Some(message) = self.msg_reader.try_read()? {
             return Ok(Some(message));
         }
@@ -285,7 +315,7 @@ impl Inner {
     }
 
     fn enqueue_data<T: Serialize>(&mut self, priority: Priority, msg: T) -> ::Res<()> {
-        let buf = serialize_with_len(msg)?;
+        let buf = serialize_with_len(msg, &self.enc_ctx)?;
         self.out_queue.push(buf, priority);
         Ok(())
     }
@@ -324,14 +354,16 @@ impl Drop for Inner {
 }
 
 /// Serialize given value and write to a buffer with 4 byte length header.
-fn serialize_with_len<T: Serialize>(value: T) -> ::Res<Vec<u8>> {
-    let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
+fn serialize_with_len<T: Serialize>(value: T, enc_ctx: &EncryptContext) -> ::Res<Vec<u8>> {
+    let encrypted_data = enc_ctx.encrypt(&value)?;
+    let encrypted_len = enc_ctx.encrypt(&(encrypted_data.len() as u32))?;
 
-    let _ = data.write_u32::<LittleEndian>(0);
-    serialise_into(&value, &mut data)?;
-    let len = data.position() - mem::size_of::<u32>() as u64;
-    data.set_position(0);
-    data.write_u32::<LittleEndian>(len as u32)?;
+    let mut data = Cursor::new(Vec::with_capacity(
+        encrypted_len.len() + encrypted_data.len(),
+    ));
+    // TODO(povilas): if safe_crypto implements encrypt_into, use that to reduce data copying
+    let _ = data.write(&encrypted_len)?;
+    let _ = data.write(&encrypted_data)?;
 
     Ok(data.into_inner())
 }
@@ -341,6 +373,7 @@ struct LenDelimitedReader {
     read_buffer: Vec<u8>,
     read_len: usize,
     max_payload_size: usize,
+    dec_ctx: DecryptContext,
 }
 
 impl LenDelimitedReader {
@@ -350,6 +383,7 @@ impl LenDelimitedReader {
             read_buffer: Vec::new(),
             read_len: 0,
             max_payload_size,
+            dec_ctx: Default::default(),
         }
     }
 
@@ -359,7 +393,7 @@ impl LenDelimitedReader {
         self.read_buffer.extend_from_slice(buf);
     }
 
-    fn try_read<T: DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    fn try_read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
         if self.read_len == 0 && !self.try_read_header()? {
             return Ok(None);
         }
@@ -367,24 +401,26 @@ impl LenDelimitedReader {
             return Ok(None);
         }
 
-        let result = deserialise_from(&mut Cursor::new(&self.read_buffer))?;
+        let result = self.dec_ctx.decrypt(&self.read_buffer)?;
         self.mark_read();
         Ok(Some(result))
     }
 
     fn try_read_header(&mut self) -> ::Res<bool> {
-        let u32_size = mem::size_of::<u32>();
-        if self.read_buffer.len() < u32_size {
+        if self.read_buffer.len() < self.dec_ctx.encrypted_size_len() {
             return Ok(false);
         }
 
-        self.read_len = Cursor::new(&self.read_buffer).read_u32::<LittleEndian>()? as usize;
+        let data_len: u32 = self
+            .dec_ctx
+            .decrypt(&self.read_buffer[..self.dec_ctx.encrypted_size_len()])?;
+        self.read_len = data_len as usize;
 
         if self.read_len > self.max_payload_size {
             return Err(SocketError::PayloadSizeProhibitive);
         }
 
-        self.read_buffer = self.read_buffer[u32_size..].to_owned();
+        self.read_buffer = self.read_buffer[self.dec_ctx.encrypted_size_len()..].to_owned();
         Ok(self.read_len > 0)
     }
 
@@ -398,21 +434,24 @@ impl LenDelimitedReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hamcrest2::prelude::*;
     use maidsafe_utilities::serialisation::serialise;
+    use safe_crypto::gen_encrypt_keypair;
+    use DEFAULT_MAX_PAYLOAD_SIZE;
 
     mod serialize_with_len {
         use super::*;
 
         proptest! {
             #[test]
-            fn it_writes_4_byte_data_length(data_len in (0..65000)) {
+            fn it_writes_encrypted_data_length(data_len in (0..65000)) {
                 let data_len = data_len as usize;
                 let exp_serialised = unwrap!(serialise(&vec![1u8; data_len]));
+                let crypto_ctx = EncryptContext::null();
 
-                let buf = unwrap!(serialize_with_len(vec![1u8; data_len]));
+                let buf = unwrap!(serialize_with_len(vec![1u8; data_len], &crypto_ctx));
 
-                let len = unwrap!(Cursor::new(buf[0..4].to_vec()).read_u32::<LittleEndian>()) as usize;
-                assert_eq!(len, exp_serialised.len());
+                assert_that!(buf.len(), eq(exp_serialised.len() + crypto_ctx.encrypted_size_len()));
             }
         }
     }
@@ -426,7 +465,7 @@ mod tests {
             #[test]
             fn it_deserializes_data_from_bytes() {
                 let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
-                let buf = unwrap!(serialize_with_len(vec![1, 2, 3]));
+                let buf = unwrap!(serialize_with_len(vec![1, 2, 3], &EncryptContext::null()));
                 reader.put_buf(&buf);
 
                 let data = unwrap!(reader.try_read());
@@ -459,5 +498,26 @@ mod tests {
                 assert_eq!(reader.read_len, 0);
             }
         }
+    }
+
+    #[test]
+    fn data_read_write_with_encryption() {
+        let (pk1, sk1) = gen_encrypt_keypair();
+        let (pk2, sk2) = gen_encrypt_keypair();
+
+        let enc_key1 = sk1.shared_secret(&pk2);
+        let enc_key2 = sk2.shared_secret(&pk1);
+
+        let serialised = unwrap!(serialize_with_len(
+            "message123".to_owned(),
+            &EncryptContext::authenticated(enc_key1)
+        ));
+
+        let mut reader = LenDelimitedReader::new(DEFAULT_MAX_PAYLOAD_SIZE);
+        reader.dec_ctx = DecryptContext::authenticated(enc_key2);
+        reader.put_buf(&serialised);
+        let deserialised: Option<String> = unwrap!(reader.try_read());
+
+        assert_eq!(deserialised, Some("message123".to_owned()));
     }
 }

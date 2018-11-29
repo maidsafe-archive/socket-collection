@@ -1,4 +1,4 @@
-use maidsafe_utilities::serialisation::{deserialise, serialise};
+use crypto::{DecryptContext, EncryptContext};
 use mio::net::UdpSocket;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
 use out_queue::OutQueue;
@@ -35,6 +35,26 @@ impl UdpSock {
     /// Create new `UdpSock` bound to the given address with given configuration.
     pub fn bind_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
         Ok(Self::wrap_with_conf(UdpSocket::bind(addr)?, conf))
+    }
+
+    /// Specify data encryption context which will determine how outgoing data is encrypted.
+    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.set_encrypt_ctx(enc_ctx);
+        Ok(())
+    }
+
+    /// Specify data decryption context which will determine how incoming data is decrypted.
+    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.set_decrypt_ctx(dec_ctx);
+        Ok(())
     }
 
     pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
@@ -209,6 +229,8 @@ struct Inner {
     current_write: Option<Vec<u8>>,
     out_queue2: OutQueue<(Vec<u8>, SocketAddr)>,
     current_write_2: Option<(Vec<u8>, SocketAddr)>,
+    enc_ctx: EncryptContext,
+    dec_ctx: DecryptContext,
 }
 
 impl Inner {
@@ -220,9 +242,19 @@ impl Inner {
             read_buffer_2: Default::default(),
             out_queue: OutQueue::new(conf.clone()),
             current_write: None,
-            out_queue2: OutQueue::new(conf),
+            out_queue2: OutQueue::new(conf.clone()),
             current_write_2: None,
+            enc_ctx: conf.enc_ctx,
+            dec_ctx: conf.dec_ctx,
         }
+    }
+
+    fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) {
+        self.enc_ctx = enc_ctx;
+    }
+
+    fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) {
+        self.dec_ctx = dec_ctx;
     }
 
     // Read message from the socket. Call this from inside the `ready` handler.
@@ -234,7 +266,7 @@ impl Inner {
     //   - Err(error):     there was an error reading from the socket.
     fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
         if let Some(data) = self.read_buffer.pop_front() {
-            return Ok(Some(deserialise(&data)?));
+            return Ok(Some(self.dec_ctx.decrypt(&data)?));
         }
 
         // the mio reading window is max at 64k (64 * 1024)
@@ -248,7 +280,7 @@ impl Inner {
                 .map(|bytes_read| buffer[..bytes_read].to_vec());
             if let RecvResult::WouldBlock(data) = handle_recv_res(res, &mut self.read_buffer)? {
                 return match data {
-                    Some(buf) => Ok(Some(deserialise(&buf)?)),
+                    Some(buf) => Ok(Some(self.dec_ctx.decrypt(&buf)?)),
                     None => Ok(None),
                 };
             }
@@ -257,10 +289,7 @@ impl Inner {
 
     fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
         if let Some((data, peer)) = self.read_buffer_2.pop_front() {
-            // The max buffer size we have is 64 * 1024 bytes so calling deserialise instead of
-            // deserialise_with_limit() which will require us to use `Bounded` which is a type in
-            // bincode. FIXME: get maidsafe-utils to take a size instead of `Bounded` type
-            return Ok(Some((deserialise(&data)?, peer)));
+            return Ok(Some((self.dec_ctx.decrypt(&data)?, peer)));
         }
 
         // the mio reading window is max at 64k (64 * 1024)
@@ -274,7 +303,9 @@ impl Inner {
                 .map(|(bytes_read, sender_addr)| (buffer[..bytes_read].to_vec(), sender_addr));
             if let RecvResult::WouldBlock(data) = handle_recv_res(res, &mut self.read_buffer_2)? {
                 return match data {
-                    Some((buf, sender_addr)) => Ok(Some((deserialise(&buf)?, sender_addr))),
+                    Some((buf, sender_addr)) => {
+                        Ok(Some((self.dec_ctx.decrypt(&buf)?, sender_addr)))
+                    }
                     None => Ok(None),
                 };
             }
@@ -291,7 +322,7 @@ impl Inner {
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
-            self.out_queue.push(serialise(&msg)?, priority);
+            self.out_queue.push(self.enc_ctx.encrypt(&msg)?, priority);
         }
         self.flush_write_until_would_block()
     }
@@ -299,7 +330,8 @@ impl Inner {
     fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
         let _ = self.out_queue2.drop_expired();
         if let Some((msg, peer, priority)) = msg {
-            self.out_queue2.push((serialise(&msg)?, peer), priority);
+            self.out_queue2
+                .push((self.enc_ctx.encrypt(&msg)?, peer), priority);
         }
         self.flush_write_to_until_would_block()
     }
