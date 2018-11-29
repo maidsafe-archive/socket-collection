@@ -10,12 +10,23 @@ use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
 use {Priority, SocketConfig, SocketError};
 
+/// Asynchronous UDP socket wrapper with some specific behavior to our use cases:
+///
+/// * The maximum message length is as long as max UDP payload size.
+/// * Incoming/outgoing messages are buffered.
+/// * All messages are encrypted with [`EncryptContext`] and decrypted with [`DecryptContext`] that
+///   can be changed at any time.
+///
+/// [`EncryptContext`]: enum.EncryptContext.html
+/// [`DecryptContext`]: enum.DecryptContext.html
 pub struct UdpSock {
     inner: Option<Inner>,
 }
 
 impl UdpSock {
-    /// Wrap `UdpSocket` and use default socket configuration.
+    /// Wrap [`UdpSocket`] and use the default socket configuration.
+    ///
+    /// [`UdpSocket`]: https://docs.rs/mio/0.6.*/mio/net/struct.UdpSocket.html
     pub fn wrap(sock: UdpSocket) -> Self {
         Self::wrap_with_conf(sock, Default::default())
     }
@@ -57,6 +68,7 @@ impl UdpSock {
         Ok(())
     }
 
+    /// Set default destination address for UDP socket.
     pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
         let inner = self
             .inner
@@ -68,6 +80,7 @@ impl UdpSock {
         Ok(())
     }
 
+    /// Get the local address UDP socket is bound to.
     pub fn local_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
             .inner
@@ -76,6 +89,7 @@ impl UdpSock {
         Ok(inner.sock.local_addr()?)
     }
 
+    /// Get the address `UdpSock` was connected to.
     pub fn peer_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
             .inner
@@ -84,6 +98,7 @@ impl UdpSock {
         Ok(inner.peer.ok_or(SocketError::UnconnectedUdpSocket)?)
     }
 
+    /// Set Time To Live value for the underlying UDP socket.
     pub fn set_ttl(&self, ttl: u32) -> ::Res<()> {
         let inner = self
             .inner
@@ -93,6 +108,7 @@ impl UdpSock {
         Ok(())
     }
 
+    /// Retrieve Time To Live value.
     pub fn ttl(&self) -> ::Res<u32> {
         let inner = self
             .inner
@@ -101,6 +117,7 @@ impl UdpSock {
         Ok(inner.sock.ttl()?)
     }
 
+    /// Retrieve last socket error, if one exists.
     pub fn take_error(&self) -> ::Res<Option<io::Error>> {
         let inner = self
             .inner
@@ -109,13 +126,14 @@ impl UdpSock {
         Ok(inner.sock.take_error()?)
     }
 
-    // Read message from the socket. Call this from inside the `ready` handler.
-    //
-    // Returns:
-    //   - Ok(Some(data)): data has been successfully read from the socket
-    //   - Ok(None):       there is not enough data in the socket. Call `read`
-    //                     again in the next invocation of the `ready` handler.
-    //   - Err(error):     there was an error reading from the socket.
+    /// Read message from the connected socket. Call this from inside the `ready` handler.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(Some(data)): data has been successfully read from the socket
+    ///   - Ok(None):       there is not enough data in the socket. Call `read()`
+    ///                     again in the next invocation of the `ready` handler.
+    ///   - Err(error):     there was an error reading from the socket.
     pub fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
         let inner = self
             .inner
@@ -124,6 +142,14 @@ impl UdpSock {
         inner.read()
     }
 
+    /// Read message from the socket. Call this from inside the `ready` handler.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(Some((data, peer_address))): data has been successfully read from the socket
+    ///   - Ok(None):       there is not enough data in the socket. Call `read()`
+    ///                     again in the next invocation of the `ready` handler.
+    ///   - Err(error):     there was an error reading from the socket.
     pub fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
         let inner = self
             .inner
@@ -132,13 +158,14 @@ impl UdpSock {
         inner.read_frm()
     }
 
-    // Write a message to the socket.
-    //
-    // Returns:
-    //   - Ok(true):   the message has been successfully written.
-    //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 will be attempted in the next write schedule.
-    //   - Err(error): there was an error while writing to the socket.
+    /// Write a message to the connected socket.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(true):   the message has been successfully written.
+    ///   - Ok(false):  the message has been queued, but not yet fully written.
+    ///                 will be attempted in the next write schedule.
+    ///   - Err(error): there was an error while writing to the socket.
     pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let inner = self
             .inner
@@ -147,6 +174,14 @@ impl UdpSock {
         inner.write(msg)
     }
 
+    /// Write a message to the socket to the given address.
+    ///
+    /// # Returns:
+    ///
+    ///   - Ok(true):   the message has been successfully written.
+    ///   - Ok(false):  the message has been queued, but not yet fully written.
+    ///                 will be attempted in the next write schedule.
+    ///   - Err(error): there was an error while writing to the socket.
     pub fn write_to<T: Serialize>(
         &mut self,
         msg: Option<(T, SocketAddr, Priority)>,
@@ -158,6 +193,7 @@ impl UdpSock {
         inner.write_to(msg)
     }
 
+    /// Retrieve the underlying mio `UdpSocket`.
     pub fn into_underlying_sock(mut self) -> ::Res<UdpSocket> {
         let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
         Ok(inner.sock)
@@ -257,13 +293,6 @@ impl Inner {
         self.dec_ctx = dec_ctx;
     }
 
-    // Read message from the socket. Call this from inside the `ready` handler.
-    //
-    // Returns:
-    //   - Ok(Some(data)): data has been successfully read from the socket.
-    //   - Ok(None):       there is not enough data in the socket. Call `read`
-    //                     again in the next invocation of the `ready` handler.
-    //   - Err(error):     there was an error reading from the socket.
     fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
         if let Some(data) = self.read_buffer.pop_front() {
             return Ok(Some(self.dec_ctx.decrypt(&data)?));
@@ -312,13 +341,6 @@ impl Inner {
         }
     }
 
-    // Write a message to the socket.
-    //
-    // Returns:
-    //   - Ok(true):   the message has been successfully written.
-    //   - Ok(false):  the message has been queued, but not yet fully written.
-    //                 will be attempted in the next write schedule.
-    //   - Err(error): there was an error while writing to the socket.
     fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
         let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
@@ -383,12 +405,14 @@ trait IsEmpty {
 }
 
 impl IsEmpty for Vec<u8> {
+    /// Checks if given vector is empty.
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
 }
 
 impl IsEmpty for (Vec<u8>, SocketAddr) {
+    /// Checks if given vector is empty, ignores socket address.
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

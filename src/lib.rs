@@ -1,9 +1,17 @@
 //! # Overview
 //!
 //! The goal of this crate is to provide a collection of async sockets which can be used out of the
-//! box with `mio` event loop. As a simple example, using stream based protocols will require some
-//! sort of mechanism to determine the boundaries of a message etc., and this crate provides default
-//! implementation to handle those and abstract the boilerplate from the user libs.
+//! box with `mio` event loop. Currently the crate exposes UDP and TCP sockets: [`UdpSock`] and
+//! [`TcpSock`] respectively. The socket behavior is very specific for [`p2p`] and [`Crust`]
+//! crates. We aim to make the sockets easy to use and reduce boilerplate code. The sockets buffer
+//! incoming/outgoing data, implement message serialization and encryption, the user of the
+//! stream based sockets don't need to worry about message boundaries, each message has a priority,
+//! number etc.
+//!
+//! [`UdpSock`]: struct.UdpSock.html
+//! [`TcpSock`]: struct.TcpSock.html
+//! [`p2p`]: https://crates.io/crates/p2p
+//! [`Crust`]: https://crates.io/crates/crust
 
 #[macro_use]
 extern crate log;
