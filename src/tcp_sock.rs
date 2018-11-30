@@ -92,6 +92,25 @@ impl TcpSock {
         Ok(())
     }
 
+    /// Set Time To Live value for the underlying TCP socket.
+    pub fn set_ttl(&self, ttl: u32) -> ::Res<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        inner.stream.set_ttl(ttl)?;
+        Ok(())
+    }
+
+    /// Retrieve Time To Live value.
+    pub fn ttl(&self) -> ::Res<u32> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(SocketError::UninitialisedSocket)?;
+        Ok(inner.stream.ttl()?)
+    }
+
     /// Returns local socket address.
     pub fn local_addr(&self) -> ::Res<SocketAddr> {
         let inner = self
