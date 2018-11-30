@@ -152,5 +152,5 @@ pub trait Socket {
     fn set_linger(&self, dur: Option<Duration>) -> ::Res<()>;
 
     /// Return the wrapped mio socket.
-    fn into_underlying_sock(self) -> ::Res<Self::Inner>;
+    fn into_inner(self) -> ::Res<Self::Inner>;
 }

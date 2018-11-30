@@ -175,7 +175,7 @@ impl Socket for TcpSock {
     }
 
     /// Retrieve the wrapped mio `TcpStream`.
-    fn into_underlying_sock(mut self) -> ::Res<Self::Inner> {
+    fn into_inner(mut self) -> ::Res<Self::Inner> {
         let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
         Ok(inner.stream)
     }
@@ -183,7 +183,7 @@ impl Socket for TcpSock {
 
 // NOTE: ideally, we would implement `Drop` for `Inner` which actually owns the `TcpStream` so it's
 // natural that it should finalize it as well. Unfortunately, we cannot move `Inner.stream` out in
-// `TcpSock::into_underlying_sock()` in such case. Since `Inner` is not exposed publicly, this
+// `TcpSock::into_inner()` in such case. Since `Inner` is not exposed publicly, this
 // design should successfully finalize TCP socket too.
 impl Drop for TcpSock {
     fn drop(&mut self) {

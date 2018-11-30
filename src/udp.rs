@@ -204,7 +204,7 @@ impl Socket for UdpSock {
     }
 
     /// Retrieve the wrapped mio `UdpSocket`.
-    fn into_underlying_sock(mut self) -> ::Res<Self::Inner> {
+    fn into_inner(mut self) -> ::Res<Self::Inner> {
         let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
         Ok(inner.sock)
     }
