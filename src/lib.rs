@@ -38,6 +38,7 @@ extern crate hamcrest2;
 
 pub use crypto::{DecryptContext, EncryptContext};
 pub use error::SocketError;
+pub use socket::Socket;
 pub use tcp_sock::TcpSock;
 pub use udp::UdpSock;
 
@@ -47,6 +48,7 @@ pub use udp::UdpSock;
 mod crypto;
 mod error;
 mod out_queue;
+mod socket;
 mod tcp_sock;
 mod udp;
 
