@@ -431,7 +431,7 @@ impl LenDelimitedReader {
             return Ok(None);
         }
 
-        let result = self.dec_ctx.decrypt(&self.read_buffer)?;
+        let result = self.dec_ctx.decrypt(&self.read_buffer[..self.read_len])?;
         self.mark_read();
         Ok(Some(result))
     }
@@ -496,6 +496,19 @@ mod tests {
             fn it_deserializes_data_from_bytes() {
                 let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
                 let buf = unwrap!(serialize_with_len(vec![1, 2, 3], &EncryptContext::null()));
+                reader.put_buf(&buf);
+
+                let data = unwrap!(reader.try_read());
+
+                assert_eq!(data, Some(vec![1, 2, 3]));
+            }
+
+            #[test]
+            fn it_deserializes_data_from_bytes_when_there_is_extra_bytes_buffered() {
+                let mut reader = LenDelimitedReader::new(2 * 1024 * 1024);
+                let buf = unwrap!(serialize_with_len(vec![1, 2, 3], &EncryptContext::null()));
+                reader.put_buf(&buf);
+                let buf = unwrap!(serialize_with_len(vec![4], &EncryptContext::null()));
                 reader.put_buf(&buf);
 
                 let data = unwrap!(reader.try_read());

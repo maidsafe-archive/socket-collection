@@ -1,5 +1,9 @@
 # socket-collection - Change Log
 
+## Unknown
+
+* Fixed TcpSock::read() when multiple messages are buffered.
+
 ## [0.4.0]
 
 * Removed UDT support.
