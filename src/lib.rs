@@ -48,7 +48,7 @@ extern crate hamcrest2;
 pub use crypto::{DecryptContext, EncryptContext};
 pub use error::SocketError;
 pub use socket::Socket;
-pub use tcp_sock::TcpSock;
+pub use tcp::TcpSock;
 pub use udp::UdpSock;
 
 // #[cfg(feature = "enable-udt")]
@@ -58,7 +58,7 @@ mod crypto;
 mod error;
 mod out_queue;
 mod socket;
-mod tcp_sock;
+mod tcp;
 mod udp;
 
 // #[cfg(feature = "enable-udt")]

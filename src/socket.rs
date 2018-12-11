@@ -13,7 +13,7 @@ use serde::ser::Serialize;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tcp_sock::TcpSock;
+use tcp::TcpSock;
 use udp::UdpSock;
 use Priority;
 
