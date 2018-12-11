@@ -11,3 +11,9 @@ of a message etc., and this crate provides default implementation to handle
 those and abstract the boilerplate from the user libs.
 In addition, `socket-collection` supports optional encryption based on
 [safe_crypto](https://github.com/maidsafe/safe_crypto) crate.
+
+## License
+
+socket-collection library is dual-licensed under the Modified BSD (
+[LICENSE-BSD](https://opensource.org/licenses/BSD-3-Clause)) or the MIT license
+( [LICENSE-MIT](http://opensource.org/licenses/MIT)) at your option.
