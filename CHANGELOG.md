@@ -1,6 +1,6 @@
 # socket-collection - Change Log
 
-## Unknown
+## [0.4.1]
 
 * Fixed TcpSock::read() when multiple messages are buffered.
 
