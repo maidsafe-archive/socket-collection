@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
-use {Priority, SocketConfig};
+use crate::{Priority, SocketConfig};
 
 /// Socket outgoing message queue with priorities and message expiration.
 /// `OutQueue` is generic and can hold arbitrary user data.

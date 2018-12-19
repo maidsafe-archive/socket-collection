@@ -57,7 +57,7 @@ impl EncryptContext {
     }
 
     /// Serialize given structure and encrypt it.
-    pub fn encrypt<T: Serialize>(&self, msg: &T) -> ::Res<Vec<u8>> {
+    pub fn encrypt<T: Serialize>(&self, msg: &T) -> crate::Res<Vec<u8>> {
         Ok(match *self {
             EncryptContext::Null => serialise(msg)?,
             EncryptContext::Authenticated { ref shared_key } => shared_key.encrypt(msg)?,
@@ -120,7 +120,7 @@ impl DecryptContext {
     }
 
     /// Decrypt given buffer and deserialize into structure.
-    pub fn decrypt<T>(&self, msg: &[u8]) -> ::Res<T>
+    pub fn decrypt<T>(&self, msg: &[u8]) -> crate::Res<T>
     where
         T: Serialize + DeserializeOwned,
     {
@@ -151,7 +151,7 @@ mod tests {
     use hamcrest2::prelude::*;
     use safe_crypto::gen_encrypt_keypair;
     use std::u32::MAX as MAX_U32;
-    use DEFAULT_MAX_PAYLOAD_SIZE;
+    use crate::DEFAULT_MAX_PAYLOAD_SIZE;
 
     mod encrypt_context {
         use super::*;
