@@ -57,7 +57,7 @@ impl EncryptContext {
     }
 
     /// Serialize given structure and encrypt it.
-    pub fn encrypt<T: Serialize>(&self, msg: &T) -> ::Res<Vec<u8>> {
+    pub fn encrypt<T: Serialize>(&self, msg: &T) -> crate::Res<Vec<u8>> {
         Ok(match *self {
             EncryptContext::Null => serialise(msg)?,
             EncryptContext::Authenticated { ref shared_key } => shared_key.encrypt(msg)?,
@@ -120,7 +120,7 @@ impl DecryptContext {
     }
 
     /// Decrypt given buffer and deserialize into structure.
-    pub fn decrypt<T>(&self, msg: &[u8]) -> ::Res<T>
+    pub fn decrypt<T>(&self, msg: &[u8]) -> crate::Res<T>
     where
         T: Serialize + DeserializeOwned,
     {
@@ -148,17 +148,17 @@ impl DecryptContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DEFAULT_MAX_PAYLOAD_SIZE;
     use hamcrest2::prelude::*;
     use safe_crypto::gen_encrypt_keypair;
     use std::u32::MAX as MAX_U32;
-    use DEFAULT_MAX_PAYLOAD_SIZE;
 
     mod encrypt_context {
         use super::*;
 
         #[test]
         fn encrypt_always_returns_constant_length_byte_array_for_4_byte_input_with_anonymous_encryption(
-) {
+        ) {
             let (pk, _sk) = gen_encrypt_keypair();
             let enc_ctx = EncryptContext::anonymous_encrypt(pk);
 
@@ -170,7 +170,7 @@ mod tests {
 
         #[test]
         fn encrypt_always_returns_constant_length_byte_array_for_4_byte_input_with_authenticated_encryption(
-) {
+        ) {
             let (_, sk1) = gen_encrypt_keypair();
             let (pk2, _) = gen_encrypt_keypair();
             let enc_ctx = EncryptContext::authenticated(sk1.shared_secret(&pk2));

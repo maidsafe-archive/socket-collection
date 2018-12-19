@@ -7,17 +7,17 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
-use crypto::{DecryptContext, EncryptContext};
+use crate::crypto::{DecryptContext, EncryptContext};
+use crate::out_queue::OutQueue;
+use crate::{Priority, SocketConfig, SocketError};
 use mio::tcp::TcpStream;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
-use out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
-use {Priority, SocketConfig, SocketError};
 
 /// TCP socket which by default is uninitialized.
 /// Asynchronous TCP socket wrapper with some specific behavior to our use cases:
@@ -42,13 +42,13 @@ pub struct TcpSock {
 impl TcpSock {
     /// Starts TCP connection. Returns immediately, so make sure to wait until the socket becomes
     /// writable.
-    pub fn connect(addr: &SocketAddr) -> ::Res<Self> {
+    pub fn connect(addr: &SocketAddr) -> crate::Res<Self> {
         Self::connect_with_conf(addr, Default::default())
     }
 
     /// Starts TCP connection and uses given socket configuration. Returns immediately, so make
     /// sure to wait until the socket becomes writable.
-    pub fn connect_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
+    pub fn connect_with_conf(addr: &SocketAddr, conf: SocketConfig) -> crate::Res<Self> {
         let stream = TcpStream::connect(addr)?;
         Ok(Self::wrap_with_conf(stream, conf))
     }
@@ -70,7 +70,7 @@ impl TcpSock {
     }
 
     /// Specify data encryption context which will determine how outgoing data is encrypted.
-    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> crate::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -80,7 +80,7 @@ impl TcpSock {
     }
 
     /// Specify data decryption context which will determine how incoming data is decrypted.
-    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> crate::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -92,7 +92,7 @@ impl TcpSock {
     /// Sets TCP [`SO_LINGER`] value for the underlying socket.
     ///
     /// [`SO_LINGER`]: https://linux.die.net/man/3/setsockopt
-    pub fn set_linger(&self, dur: Option<Duration>) -> ::Res<()> {
+    pub fn set_linger(&self, dur: Option<Duration>) -> crate::Res<()> {
         let inner = self
             .inner
             .as_ref()
@@ -102,7 +102,7 @@ impl TcpSock {
     }
 
     /// Set Time To Live value for the underlying TCP socket.
-    pub fn set_ttl(&self, ttl: u32) -> ::Res<()> {
+    pub fn set_ttl(&self, ttl: u32) -> crate::Res<()> {
         let inner = self
             .inner
             .as_ref()
@@ -112,7 +112,7 @@ impl TcpSock {
     }
 
     /// Retrieve Time To Live value.
-    pub fn ttl(&self) -> ::Res<u32> {
+    pub fn ttl(&self) -> crate::Res<u32> {
         let inner = self
             .inner
             .as_ref()
@@ -121,7 +121,7 @@ impl TcpSock {
     }
 
     /// Returns local socket address.
-    pub fn local_addr(&self) -> ::Res<SocketAddr> {
+    pub fn local_addr(&self) -> crate::Res<SocketAddr> {
         let inner = self
             .inner
             .as_ref()
@@ -130,7 +130,7 @@ impl TcpSock {
     }
 
     /// Returns the address of the remote peer socket is connected to.
-    pub fn peer_addr(&self) -> ::Res<SocketAddr> {
+    pub fn peer_addr(&self) -> crate::Res<SocketAddr> {
         let inner = self
             .inner
             .as_ref()
@@ -139,7 +139,7 @@ impl TcpSock {
     }
 
     /// Retrieve last socket error, if one exists.
-    pub fn take_error(&self) -> ::Res<Option<io::Error>> {
+    pub fn take_error(&self) -> crate::Res<Option<io::Error>> {
         let inner = self
             .inner
             .as_ref()
@@ -155,7 +155,7 @@ impl TcpSock {
     ///   - Ok(None):       there is not enough data in the socket. Call `read()`
     ///                     again in the next invocation of the `ready` handler.
     ///   - Err(error):     there was an error reading from the socket.
-    pub fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    pub fn read<T: Serialize + DeserializeOwned>(&mut self) -> crate::Res<Option<T>> {
         let inner = self
             .inner
             .as_mut()
@@ -171,7 +171,7 @@ impl TcpSock {
     ///   - Ok(false):  the message has been queued, but not yet fully written.
     ///                 will be attempted in the next write schedule.
     ///   - Err(error): there was an error while writing to the socket.
-    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
+    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> crate::Res<bool> {
         let inner = self
             .inner
             .as_mut()
@@ -269,7 +269,7 @@ impl Inner {
         self.msg_reader.dec_ctx = dec_ctx;
     }
 
-    fn read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    fn read<T: Serialize + DeserializeOwned>(&mut self) -> crate::Res<Option<T>> {
         if let Some(message) = self.msg_reader.try_read()? {
             return Ok(Some(message));
         }
@@ -312,7 +312,7 @@ impl Inner {
         }
     }
 
-    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> crate::Res<bool> {
         let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
             self.enqueue_data(priority, msg)?;
@@ -321,7 +321,7 @@ impl Inner {
     }
 
     /// Returns `Ok(false)`, if write to the underlying stream would block.
-    fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
+    fn flush_write_until_would_block(&mut self) -> crate::Res<bool> {
         loop {
             let data = if let Some(data) = self
                 .current_write
@@ -353,7 +353,7 @@ impl Inner {
         }
     }
 
-    fn enqueue_data<T: Serialize>(&mut self, priority: Priority, msg: T) -> ::Res<()> {
+    fn enqueue_data<T: Serialize>(&mut self, priority: Priority, msg: T) -> crate::Res<()> {
         let buf = serialize_with_len(msg, &self.enc_ctx)?;
         self.out_queue.push(buf, priority);
         Ok(())
@@ -393,7 +393,7 @@ impl Drop for Inner {
 }
 
 /// Serialize given value and write to a buffer with 4 byte length header.
-fn serialize_with_len<T: Serialize>(value: T, enc_ctx: &EncryptContext) -> ::Res<Vec<u8>> {
+fn serialize_with_len<T: Serialize>(value: T, enc_ctx: &EncryptContext) -> crate::Res<Vec<u8>> {
     let encrypted_data = enc_ctx.encrypt(&value)?;
     let encrypted_len = enc_ctx.encrypt(&(encrypted_data.len() as u32))?;
 
@@ -432,7 +432,7 @@ impl LenDelimitedReader {
         self.read_buffer.extend_from_slice(buf);
     }
 
-    fn try_read<T: Serialize + DeserializeOwned>(&mut self) -> ::Res<Option<T>> {
+    fn try_read<T: Serialize + DeserializeOwned>(&mut self) -> crate::Res<Option<T>> {
         if self.read_len == 0 && !self.try_read_header()? {
             return Ok(None);
         }
@@ -445,7 +445,7 @@ impl LenDelimitedReader {
         Ok(Some(result))
     }
 
-    fn try_read_header(&mut self) -> ::Res<bool> {
+    fn try_read_header(&mut self) -> crate::Res<bool> {
         if self.read_buffer.len() < self.dec_ctx.encrypted_size_len() {
             return Ok(false);
         }
@@ -473,10 +473,10 @@ impl LenDelimitedReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DEFAULT_MAX_PAYLOAD_SIZE;
     use hamcrest2::prelude::*;
     use maidsafe_utilities::serialisation::serialise;
     use safe_crypto::gen_encrypt_keypair;
-    use DEFAULT_MAX_PAYLOAD_SIZE;
 
     mod serialize_with_len {
         use super::*;

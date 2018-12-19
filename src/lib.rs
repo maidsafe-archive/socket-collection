@@ -24,7 +24,7 @@
 
 #[macro_use]
 extern crate log;
-#[cfg_attr(feature = "cargo-clippy", allow(useless_attribute))]
+#[allow(clippy::useless_attribute)]
 #[macro_use]
 extern crate quick_error;
 #[macro_use]
@@ -45,11 +45,11 @@ extern crate hamcrest2;
 // #[cfg(feature = "enable-udt")]
 // extern crate udt as udt_extern;
 
-pub use crypto::{DecryptContext, EncryptContext};
-pub use error::SocketError;
-pub use socket::Socket;
-pub use tcp::TcpSock;
-pub use udp::UdpSock;
+pub use crate::crypto::{DecryptContext, EncryptContext};
+pub use crate::error::SocketError;
+pub use crate::socket::Socket;
+pub use crate::tcp::TcpSock;
+pub use crate::udp::UdpSock;
 
 // #[cfg(feature = "enable-udt")]
 // pub use udt::{EpollLoop, Handle, Notifier, UdtSock};

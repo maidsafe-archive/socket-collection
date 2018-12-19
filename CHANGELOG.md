@@ -3,6 +3,7 @@
 ## Unknown
 
 * Fixed TcpSock::read() when multiple messages are buffered.
+* Updated Rust edition to 2018.
 
 ## [0.4.0]
 

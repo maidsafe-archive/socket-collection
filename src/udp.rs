@@ -7,17 +7,17 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
-use crypto::{DecryptContext, EncryptContext};
+use crate::crypto::{DecryptContext, EncryptContext};
+use crate::out_queue::OutQueue;
+use crate::{Priority, SocketConfig, SocketError};
 use mio::net::UdpSocket;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
-use out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
-use {Priority, SocketConfig, SocketError};
 
 /// Asynchronous UDP socket wrapper with some specific behavior to our use cases:
 ///
@@ -48,17 +48,17 @@ impl UdpSock {
     }
 
     /// Create new `UdpSock` bound to the given address with default configuration.
-    pub fn bind(addr: &SocketAddr) -> ::Res<Self> {
+    pub fn bind(addr: &SocketAddr) -> crate::Res<Self> {
         Self::bind_with_conf(addr, Default::default())
     }
 
     /// Create new `UdpSock` bound to the given address with given configuration.
-    pub fn bind_with_conf(addr: &SocketAddr, conf: SocketConfig) -> ::Res<Self> {
+    pub fn bind_with_conf(addr: &SocketAddr, conf: SocketConfig) -> crate::Res<Self> {
         Ok(Self::wrap_with_conf(UdpSocket::bind(addr)?, conf))
     }
 
     /// Specify data encryption context which will determine how outgoing data is encrypted.
-    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> ::Res<()> {
+    pub fn set_encrypt_ctx(&mut self, enc_ctx: EncryptContext) -> crate::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -68,7 +68,7 @@ impl UdpSock {
     }
 
     /// Specify data decryption context which will determine how incoming data is decrypted.
-    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> ::Res<()> {
+    pub fn set_decrypt_ctx(&mut self, dec_ctx: DecryptContext) -> crate::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -78,7 +78,7 @@ impl UdpSock {
     }
 
     /// Set default destination address for UDP socket.
-    pub fn connect(&mut self, addr: &SocketAddr) -> ::Res<()> {
+    pub fn connect(&mut self, addr: &SocketAddr) -> crate::Res<()> {
         let inner = self
             .inner
             .as_mut()
@@ -90,7 +90,7 @@ impl UdpSock {
     }
 
     /// Get the local address UDP socket is bound to.
-    pub fn local_addr(&self) -> ::Res<SocketAddr> {
+    pub fn local_addr(&self) -> crate::Res<SocketAddr> {
         let inner = self
             .inner
             .as_ref()
@@ -99,7 +99,7 @@ impl UdpSock {
     }
 
     /// Get the address `UdpSock` was connected to.
-    pub fn peer_addr(&self) -> ::Res<SocketAddr> {
+    pub fn peer_addr(&self) -> crate::Res<SocketAddr> {
         let inner = self
             .inner
             .as_ref()
@@ -108,7 +108,7 @@ impl UdpSock {
     }
 
     /// Set Time To Live value for the underlying UDP socket.
-    pub fn set_ttl(&self, ttl: u32) -> ::Res<()> {
+    pub fn set_ttl(&self, ttl: u32) -> crate::Res<()> {
         let inner = self
             .inner
             .as_ref()
@@ -118,7 +118,7 @@ impl UdpSock {
     }
 
     /// Retrieve Time To Live value.
-    pub fn ttl(&self) -> ::Res<u32> {
+    pub fn ttl(&self) -> crate::Res<u32> {
         let inner = self
             .inner
             .as_ref()
@@ -127,7 +127,7 @@ impl UdpSock {
     }
 
     /// Retrieve last socket error, if one exists.
-    pub fn take_error(&self) -> ::Res<Option<io::Error>> {
+    pub fn take_error(&self) -> crate::Res<Option<io::Error>> {
         let inner = self
             .inner
             .as_ref()
@@ -143,7 +143,7 @@ impl UdpSock {
     ///   - Ok(None):       there is not enough data in the socket. Call `read()`
     ///                     again in the next invocation of the `ready` handler.
     ///   - Err(error):     there was an error reading from the socket.
-    pub fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
+    pub fn read<T: DeserializeOwned + Serialize>(&mut self) -> crate::Res<Option<T>> {
         let inner = self
             .inner
             .as_mut()
@@ -159,7 +159,9 @@ impl UdpSock {
     ///   - Ok(None):       there is not enough data in the socket. Call `read()`
     ///                     again in the next invocation of the `ready` handler.
     ///   - Err(error):     there was an error reading from the socket.
-    pub fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
+    pub fn read_frm<T: DeserializeOwned + Serialize>(
+        &mut self,
+    ) -> crate::Res<Option<(T, SocketAddr)>> {
         let inner = self
             .inner
             .as_mut()
@@ -175,7 +177,7 @@ impl UdpSock {
     ///   - Ok(false):  the message has been queued, but not yet fully written.
     ///                 will be attempted in the next write schedule.
     ///   - Err(error): there was an error while writing to the socket.
-    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
+    pub fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> crate::Res<bool> {
         let inner = self
             .inner
             .as_mut()
@@ -194,7 +196,7 @@ impl UdpSock {
     pub fn write_to<T: Serialize>(
         &mut self,
         msg: Option<(T, SocketAddr, Priority)>,
-    ) -> ::Res<bool> {
+    ) -> crate::Res<bool> {
         let inner = self
             .inner
             .as_mut()
@@ -203,7 +205,7 @@ impl UdpSock {
     }
 
     /// Retrieve the underlying mio `UdpSocket`.
-    pub fn into_underlying_sock(mut self) -> ::Res<UdpSocket> {
+    pub fn into_underlying_sock(mut self) -> crate::Res<UdpSocket> {
         let inner = self.inner.take().ok_or(SocketError::UninitialisedSocket)?;
         Ok(inner.sock)
     }
@@ -302,7 +304,7 @@ impl Inner {
         self.dec_ctx = dec_ctx;
     }
 
-    fn read<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<T>> {
+    fn read<T: DeserializeOwned + Serialize>(&mut self) -> crate::Res<Option<T>> {
         if let Some(data) = self.read_buffer.pop_front() {
             return Ok(Some(self.dec_ctx.decrypt(&data)?));
         }
@@ -325,7 +327,7 @@ impl Inner {
         }
     }
 
-    fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> ::Res<Option<(T, SocketAddr)>> {
+    fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> crate::Res<Option<(T, SocketAddr)>> {
         if let Some((data, peer)) = self.read_buffer_2.pop_front() {
             return Ok(Some((self.dec_ctx.decrypt(&data)?, peer)));
         }
@@ -350,7 +352,7 @@ impl Inner {
         }
     }
 
-    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> ::Res<bool> {
+    fn write<T: Serialize>(&mut self, msg: Option<(T, Priority)>) -> crate::Res<bool> {
         let _ = self.out_queue.drop_expired();
         if let Some((msg, priority)) = msg {
             self.out_queue.push(self.enc_ctx.encrypt(&msg)?, priority);
@@ -358,7 +360,10 @@ impl Inner {
         self.flush_write_until_would_block()
     }
 
-    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> ::Res<bool> {
+    fn write_to<T: Serialize>(
+        &mut self,
+        msg: Option<(T, SocketAddr, Priority)>,
+    ) -> crate::Res<bool> {
         let _ = self.out_queue2.drop_expired();
         if let Some((msg, peer, priority)) = msg {
             self.out_queue2
@@ -368,7 +373,7 @@ impl Inner {
     }
 
     /// Returns `Ok(false)`, if write to the underlying stream would block.
-    fn flush_write_until_would_block(&mut self) -> ::Res<bool> {
+    fn flush_write_until_would_block(&mut self) -> crate::Res<bool> {
         loop {
             let data = if let Some(data) = self
                 .current_write
@@ -388,7 +393,7 @@ impl Inner {
     }
 
     /// Returns `Ok(false)`, if write to the underlying stream would block.
-    fn flush_write_to_until_would_block(&mut self) -> ::Res<bool> {
+    fn flush_write_to_until_would_block(&mut self) -> crate::Res<bool> {
         loop {
             let (data, peer) = if let Some(data_peer) = self
                 .current_write_2
@@ -439,7 +444,7 @@ enum RecvResult<T> {
 fn handle_recv_res<T: IsEmpty>(
     recv_res: io::Result<T>,
     read_buffer: &mut VecDeque<T>,
-) -> ::Res<RecvResult<T>> {
+) -> crate::Res<RecvResult<T>> {
     match recv_res {
         Ok(msg) => {
             if !msg.is_empty() {
@@ -463,7 +468,7 @@ fn handle_send_res<M>(
     current_write: &mut Option<M>,
     msg_len: usize,
     msg: M,
-) -> ::Res<bool> {
+) -> crate::Res<bool> {
     match send_res {
         Ok(bytes_txd) => {
             if bytes_txd < msg_len {
