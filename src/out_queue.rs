@@ -7,9 +7,9 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
+use crate::{Priority, SocketConfig};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
-use crate::{Priority, SocketConfig};
 
 /// Socket outgoing message queue with priorities and message expiration.
 /// `OutQueue` is generic and can hold arbitrary user data.

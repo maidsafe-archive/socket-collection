@@ -8,14 +8,14 @@
 // Software.
 
 use crate::crypto::{DecryptContext, EncryptContext};
+use crate::tcp::TcpSock;
+use crate::udp::UdpSock;
+use crate::Priority;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
-use crate::tcp::TcpSock;
-use crate::udp::UdpSock;
-use crate::Priority;
 
 /// Protocol agnostic socket that wraps [`UdpSock`] and [`TcpSock`].
 ///

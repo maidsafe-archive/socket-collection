@@ -8,16 +8,16 @@
 // Software.
 
 use crate::crypto::{DecryptContext, EncryptContext};
+use crate::out_queue::OutQueue;
+use crate::{Priority, SocketConfig, SocketError};
 use mio::tcp::TcpStream;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
-use crate::out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr};
 use std::time::Duration;
-use crate::{Priority, SocketConfig, SocketError};
 
 /// TCP socket which by default is uninitialized.
 /// Asynchronous TCP socket wrapper with some specific behavior to our use cases:
@@ -473,10 +473,10 @@ impl LenDelimitedReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DEFAULT_MAX_PAYLOAD_SIZE;
     use hamcrest2::prelude::*;
     use maidsafe_utilities::serialisation::serialise;
     use safe_crypto::gen_encrypt_keypair;
-    use crate::DEFAULT_MAX_PAYLOAD_SIZE;
 
     mod serialize_with_len {
         use super::*;

@@ -8,16 +8,16 @@
 // Software.
 
 use crate::crypto::{DecryptContext, EncryptContext};
+use crate::out_queue::OutQueue;
+use crate::{Priority, SocketConfig, SocketError};
 use mio::net::UdpSocket;
 use mio::{Evented, Poll, PollOpt, Ready, Token};
-use crate::out_queue::OutQueue;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
-use crate::{Priority, SocketConfig, SocketError};
 
 /// Asynchronous UDP socket wrapper with some specific behavior to our use cases:
 ///
@@ -159,7 +159,9 @@ impl UdpSock {
     ///   - Ok(None):       there is not enough data in the socket. Call `read()`
     ///                     again in the next invocation of the `ready` handler.
     ///   - Err(error):     there was an error reading from the socket.
-    pub fn read_frm<T: DeserializeOwned + Serialize>(&mut self) -> crate::Res<Option<(T, SocketAddr)>> {
+    pub fn read_frm<T: DeserializeOwned + Serialize>(
+        &mut self,
+    ) -> crate::Res<Option<(T, SocketAddr)>> {
         let inner = self
             .inner
             .as_mut()
@@ -358,7 +360,10 @@ impl Inner {
         self.flush_write_until_would_block()
     }
 
-    fn write_to<T: Serialize>(&mut self, msg: Option<(T, SocketAddr, Priority)>) -> crate::Res<bool> {
+    fn write_to<T: Serialize>(
+        &mut self,
+        msg: Option<(T, SocketAddr, Priority)>,
+    ) -> crate::Res<bool> {
         let _ = self.out_queue2.drop_expired();
         if let Some((msg, peer, priority)) = msg {
             self.out_queue2
