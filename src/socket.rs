@@ -21,7 +21,7 @@ use std::time::Duration;
 ///
 /// [`UdpSock`]: struct.UdpSock.html
 /// [`TcpSock`]: struct.TcpSock.html
-#[cfg_attr(feature = "cargo-clippy", allow(large_enum_variant))]
+#[allow(clippy::large_enum_variant)]
 pub enum Socket {
     Udp(UdpSock),
     Tcp(TcpSock),
