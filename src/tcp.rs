@@ -306,7 +306,7 @@ impl Inner {
                         }
                     } else {
                         Err(From::from(error))
-                    }
+                    };
                 }
             }
         }
