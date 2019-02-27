@@ -1,8 +1,8 @@
 # Socket collection
 
-|Crate|Documentation|Linux/OS X/Windows|
+|Crate|Documentation|Linux/macOS/Windows|
 |:---:|:-----------:|:-----------------:|
-| [![](http://meritbadge.herokuapp.com/socket-collection)](https://crates.io/crates/socket-collection) | [![Documentation](https://docs.rs/socket-collection/badge.svg)](https://docs.rs/socket-collection) | [![Build Status](https://travis-ci.org/maidsafe/socket-collection.svg?branch=master)](https://travis-ci.org/maidsafe/socket-collection)
+| [![](http://meritbadge.herokuapp.com/socket-collection)](https://crates.io/crates/socket-collection) | [![Documentation](https://docs.rs/socket-collection/badge.svg)](https://docs.rs/socket-collection) | [![Build Status](https://travis-ci.com/maidsafe/socket-collection.svg?branch=master)](https://travis-ci.com/maidsafe/socket-collection)
 
 The goal of this crate is to provide a collection of async sockets which can be
 used out of the box with `mio` event loop. As a simple example, using stream
